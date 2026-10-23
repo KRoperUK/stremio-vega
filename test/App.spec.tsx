@@ -11,6 +11,10 @@ jest.mock('@amazon-devices/react-native-kepler', () => ({
   useHideSplashScreenCallback: jest.fn(() => jest.fn()),
   StyleSheet: {create: (styles: unknown) => styles},
   View: 'View',
+  BackHandler: {
+    addEventListener: jest.fn(() => ({remove: jest.fn()})),
+    exitApp: jest.fn(),
+  },
 }));
 
 describe('App', () => {

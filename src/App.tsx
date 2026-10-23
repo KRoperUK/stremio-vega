@@ -1,7 +1,7 @@
 import {WebView} from '@amazon-devices/webview';
 import * as React from 'react';
-import {useRef} from 'react';
-import {View, StyleSheet} from 'react-native';
+import {useCallback, useEffect, useRef} from 'react';
+import {View, StyleSheet, BackHandler} from 'react-native';
 import {
   useHideSplashScreenCallback,
   usePreventHideSplashScreen,
@@ -10,16 +10,81 @@ import {
   SslErrorData,
   WebViewErrorEvent,
   WebViewHttpErrorEvent,
+  WebViewMessageEvent,
+  WebViewMethods,
   WebViewNavigationEvent,
 } from '@amazon-devices/webview/dist/types/WebViewTypes';
 
+// Translate the Vega remote's Back/GoBack key into a synthetic Escape keydown
+// inside the page. stremio-web was written for desktop browsers and closes
+// modals / the player overlay on `event.key === 'Escape'`; on Vega the Back
+// button arrives as `event.key === 'GoBack'` (keyCode 27), which stremio-web
+// does not recognise. This shim lets in-page overlays dismiss on Back, while
+// page-level history is handled natively by the RN BackHandler below.
+const GO_BACK_SHIM = `
+(function () {
+  if (window.__vegaGoBackShim) return;
+  window.__vegaGoBackShim = true;
+  document.addEventListener(
+    'keydown',
+    function (e) {
+      if (e.key === 'GoBack' || e.keyCode === 27) {
+        var esc = new KeyboardEvent('keydown', {
+          key: 'Escape',
+          code: 'Escape',
+          keyCode: 27,
+          which: 27,
+          bubbles: true,
+          cancelable: true,
+        });
+        document.dispatchEvent(esc);
+      }
+    },
+    true,
+  );
+})();
+true;
+`;
+
 export const App = () => {
-  const webRef = useRef(null);
+  const webRef = useRef<WebViewMethods | null>(null);
+  const canGoBackRef = useRef(false);
   // By default splash screen is shown in app launch, as the splash
   // screen images are bundled in this app (assets/raw/ folder)
   // Declare that application wants to extend splash screen lifecycle
   usePreventHideSplashScreen();
   const hideSplashScreenCallback = useHideSplashScreenCallback();
+
+  // Hardware Back button: navigate WebView history when possible, otherwise
+  // let the system handle it (app exit). This is the Vega-recommended path —
+  // relying on the page alone does not work because stremio-web listens for
+  // Escape, not GoBack.
+  useEffect(() => {
+    const onBackPress = (): boolean => {
+      if (canGoBackRef.current && webRef.current) {
+        webRef.current.goBack();
+        return true; // consumed
+      }
+      return false; // allow default (exit)
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, []);
+
+  const onLoad = useCallback(
+    (event: WebViewNavigationEvent) => {
+      canGoBackRef.current = event.nativeEvent.canGoBack;
+      console.info('Page loading completed...');
+      hideSplashScreenCallback();
+    },
+    [hideSplashScreenCallback],
+  );
+
+  const onLoadStart = useCallback((event: WebViewNavigationEvent) => {
+    canGoBackRef.current = event.nativeEvent.canGoBack;
+    console.info('Page loading started...');
+  }, []);
+
   return (
     <View style={styles.container}>
       <WebView
@@ -32,19 +97,24 @@ export const App = () => {
         javaScriptEnabled
         mediaPlaybackRequiresUserAction={false}
         mixedContentMode="compatibility"
+        injectedJavaScriptBeforeContentLoaded={GO_BACK_SHIM}
         // thirdPartyCookiesEnabled
         // userAgent={''}
         source={{
           // headers: {},
-          uri: "https://web.stremio.com",
+          uri: 'https://web.stremio.com',
         }}
-        onLoad={(_event: WebViewNavigationEvent) => {
-          console.info('Page loading completed...');
-          // Hide the splash screen
-          hideSplashScreenCallback();
+        onLoad={onLoad}
+        onLoadStart={onLoadStart}
+        onMessage={(event: WebViewMessageEvent) => {
+          // Reserved for an in-page EXIT_APP bridge if needed later.
+          if (event.nativeEvent.data === 'EXIT_APP') {
+            BackHandler.exitApp();
+          }
         }}
-        onLoadStart={(_event: WebViewNavigationEvent) => {
-          console.info('Page loading started...');
+        onCloseWindow={() => {
+          // Window close requested by the platform / page — exit cleanly.
+          BackHandler.exitApp();
         }}
         onError={({
           nativeEvent: {code, url, description},
