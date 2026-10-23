@@ -62,7 +62,14 @@ const INIT_SCRIPT = `
     true,
   );
 
-  // (2) Force gamepadSupport on once the core transport is available.
+  // (2) Force player settings once the core transport is available:
+  //   - gamepadSupport: on, so the remote drives the on-screen controls.
+  //   - streamingServerUrl: point at the Stremio streaming server running on
+  //     the host (reachable from the Vega Virtual Device at 10.0.2.2, the
+  //     QEMU host gateway). Without a streaming server, most addon/torrent
+  //     streams are handed to the player un-remuxed and stall on Vega's W3C
+  //     media pipeline (poster -> black, time advances, no frames).
+  var FORCED_SERVER_URL = 'http://10.0.2.2:11470/';
   var tries = 0;
   var timer = setInterval(function () {
     tries += 1;
@@ -80,8 +87,11 @@ const INIT_SCRIPT = `
         var profile = JSON.parse(stored);
         if (profile && profile.settings) {
           settings = profile.settings;
-          if (settings.gamepadSupport === true) {
-            clearInterval(timer); // already on, nothing to do
+          if (
+            settings.gamepadSupport === true &&
+            settings.streamingServerUrl === FORCED_SERVER_URL
+          ) {
+            clearInterval(timer); // already as desired, nothing to do
             return;
           }
         }
@@ -90,7 +100,10 @@ const INIT_SCRIPT = `
       /* fall through with empty settings */
     }
 
-    var next = Object.assign({}, settings, {gamepadSupport: true});
+    var next = Object.assign({}, settings, {
+      gamepadSupport: true,
+      streamingServerUrl: FORCED_SERVER_URL,
+    });
     try {
       core.dispatch({
         action: 'Ctx',
