@@ -7,6 +7,7 @@
 
 dist
 build
+.stremio-web-build
 node_modules
 CMakeUserPresets.json
 npm-debug.log

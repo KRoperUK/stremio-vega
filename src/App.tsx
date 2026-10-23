@@ -174,7 +174,12 @@ export const App = () => {
         // userAgent={''}
         source={{
           // headers: {},
-          uri: 'https://web.stremio.com',
+          // Self-hosted stremio-web served over HTTP from the host (the
+          // QEMU host gateway, 10.0.2.2:8080). Loading over HTTP — rather than
+          // https://web.stremio.com — means the page shares a scheme with the
+          // HTTP streaming server, so the browser does not block it as mixed
+          // content. It also removes the remote-load latency on startup.
+          uri: 'http://10.0.2.2:8080',
         }}
         onLoad={onLoad}
         onLoadStart={onLoadStart}
