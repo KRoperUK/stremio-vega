@@ -21,10 +21,29 @@ import {
 // button arrives as `event.key === 'GoBack'` (keyCode 27), which stremio-web
 // does not recognise. This shim lets in-page overlays dismiss on Back, while
 // page-level history is handled natively by the RN BackHandler below.
-const GO_BACK_SHIM = `
+// Injected into the page before content loads. Two concerns:
+//
+// 1. GoBack->Escape shim: stremio-web closes modals / the player overlay on
+//    `event.key === 'Escape'`; Vega delivers the remote Back button as
+//    `event.key === 'GoBack'` (keyCode 27), which the page does not recognise.
+//    Page-level history is handled by the RN BackHandler below; this makes
+//    in-page overlays dismiss on Back too.
+//
+// 2. Force gamepad support ON: the on-screen player control buttons only
+//    respond to the remote when stremio-web's "gamepad support" interface
+//    setting is enabled (profile.settings.gamepadSupport). We force it on at
+//    every launch so it is never a manual step. stremio-core exposes its
+//    transport as `window.core` once initialised (set in CoreProvider), and
+//    persists the profile to localStorage under the "profile" key. We poll for
+//    the transport and dispatch the exact Ctx/UpdateSettings action the
+//    Settings toggle uses, spreading the current settings so nothing else is
+//    disturbed.
+const INIT_SCRIPT = `
 (function () {
-  if (window.__vegaGoBackShim) return;
-  window.__vegaGoBackShim = true;
+  if (window.__vegaInit) return;
+  window.__vegaInit = true;
+
+  // (1) Back button -> Escape for in-page overlays.
   document.addEventListener(
     'keydown',
     function (e) {
@@ -42,6 +61,46 @@ const GO_BACK_SHIM = `
     },
     true,
   );
+
+  // (2) Force gamepadSupport on once the core transport is available.
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    if (tries > 150) {
+      clearInterval(timer); // give up after ~30s
+      return;
+    }
+    var core = window.core;
+    if (!core || typeof core.dispatch !== 'function') return;
+
+    var settings = {};
+    try {
+      var stored = window.localStorage.getItem('profile');
+      if (stored) {
+        var profile = JSON.parse(stored);
+        if (profile && profile.settings) {
+          settings = profile.settings;
+          if (settings.gamepadSupport === true) {
+            clearInterval(timer); // already on, nothing to do
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      /* fall through with empty settings */
+    }
+
+    var next = Object.assign({}, settings, {gamepadSupport: true});
+    try {
+      core.dispatch({
+        action: 'Ctx',
+        args: {action: 'UpdateSettings', args: next},
+      });
+      clearInterval(timer);
+    } catch (err) {
+      /* retry on next tick */
+    }
+  }, 200);
 })();
 true;
 `;
@@ -97,7 +156,7 @@ export const App = () => {
         javaScriptEnabled
         mediaPlaybackRequiresUserAction={false}
         mixedContentMode="compatibility"
-        injectedJavaScriptBeforeContentLoaded={GO_BACK_SHIM}
+        injectedJavaScriptBeforeContentLoaded={INIT_SCRIPT}
         // thirdPartyCookiesEnabled
         // userAgent={''}
         source={{
