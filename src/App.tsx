@@ -17,63 +17,58 @@ import {
 import {config} from './config';
 
 // The app we load is our OWN web client (built from /app and served by the
-// streaming server at config.baseUrl over HTTPS). It handles the remote Back
-// key itself (listens for GoBack/Escape), so the only thing we inject is a
-// tiny shim that also dispatches an Escape on GoBack, as a belt-and-braces for
-// any <video> fullscreen/native overlay. Page-level history is driven by the
-// RN BackHandler below.
+// streaming server at config.baseUrl over HTTPS). The web app owns the back
+// stack: it listens for a GoBack/Escape keydown, pops one view, and only when
+// already at the root posts 'EXIT_APP' back to us to close the app.
+//
+// Because the app is a single page (no WebView history), we must NOT drive
+// WebView.goBack() on the hardware Back key. Instead the native Back key is
+// forwarded into the page as a GoBack keydown (see onBackPress below), so the
+// web app's single handler decides every time whether to pop a view or exit.
 const INIT_SCRIPT = `
 (function () {
   if (window.__vegaInit) return;
   window.__vegaInit = true;
-  document.addEventListener(
-    'keydown',
-    function (e) {
-      if (e.key === 'GoBack' || e.keyCode === 27) {
-        var esc = new KeyboardEvent('keydown', {
-          key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
-          bubbles: true, cancelable: true,
-        });
-        document.dispatchEvent(esc);
-      }
-    },
-    true,
-  );
+  // Let the host (RN) deliver Back by calling window.__vegaBack(); it
+  // dispatches a GoBack keydown the app already listens for.
+  window.__vegaBack = function () {
+    var ev = new KeyboardEvent('keydown', {
+      key: 'GoBack', code: 'GoBack', keyCode: 27, which: 27,
+      bubbles: true, cancelable: true,
+    });
+    document.dispatchEvent(ev);
+  };
 })();
 true;
 `;
 
 export const App = () => {
   const webRef = useRef<WebViewMethods | null>(null);
-  const canGoBackRef = useRef(false);
   usePreventHideSplashScreen();
   const hideSplashScreenCallback = useHideSplashScreenCallback();
 
-  // Hardware Back: navigate WebView history when possible, else let the system
-  // exit the app.
+  // Hardware Back: forward into the web app, which owns the back stack and
+  // decides whether to pop a view or request exit (via the EXIT_APP message).
+  // We always return true so the system never exits the app out from under the
+  // web app's own navigation.
   useEffect(() => {
     const onBackPress = (): boolean => {
-      if (canGoBackRef.current && webRef.current) {
-        webRef.current.goBack();
-        return true;
-      }
-      return false;
+      webRef.current?.injectJavaScript('window.__vegaBack && window.__vegaBack(); true;');
+      return true;
     };
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => sub.remove();
   }, []);
 
   const onLoad = useCallback(
-    (event: WebViewNavigationEvent) => {
-      canGoBackRef.current = event.nativeEvent.canGoBack;
+    (_event: WebViewNavigationEvent) => {
       console.info('Page loading completed...');
       hideSplashScreenCallback();
     },
     [hideSplashScreenCallback],
   );
 
-  const onLoadStart = useCallback((event: WebViewNavigationEvent) => {
-    canGoBackRef.current = event.nativeEvent.canGoBack;
+  const onLoadStart = useCallback((_event: WebViewNavigationEvent) => {
     console.info('Page loading started...');
   }, []);
 

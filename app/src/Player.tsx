@@ -19,12 +19,10 @@ export function Player({stream, onClose}: {stream: Stream; onClose: () => void})
       v.focus();
       void v.play().catch(() => {/* autoplay may need a key press */});
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'GoBack' || e.key === 'Escape' || e.keyCode === 27) onClose();
-    };
-    document.addEventListener('keydown', onKey, true);
-    return () => document.removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+    // Back/Escape is handled globally by App (which closes the player first),
+    // so the Player does not add its own key listener — that would double-fire
+    // and also pop a view behind the player.
+  }, []);
 
   if (!src) {
     return (
