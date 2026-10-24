@@ -50,13 +50,23 @@ services:
       - streaming-server
     environment:
       SERVER_TOKEN: ${SERVER_TOKEN:?SERVER_TOKEN is required}
-    # Published only to loopback on the host; the Cloudflare tunnel (configured
-    # out-of-band) is what exposes it publicly over HTTPS.
+    # Published to loopback for a local/tailnet check. Public exposure is via a
+    # reverse proxy / tunnel on the host that reaches this container by name on
+    # the shared external network below and terminates TLS — the loopback port
+    # is not the public path.
     ports:
       - "127.0.0.1:${WEB_PORT:-8080}:80"
     networks:
       - internal
+      - edge
 
 networks:
   internal:
     driver: bridge
+  # Joined, not created here: the host's reverse-proxy / tunnel stack owns this
+  # network, and reaches the web container by its container_name on it. Named
+  # `cloudflared_cloudflared` on the deploy host; override via COMPOSE if your
+  # proxy network differs.
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:-cloudflared_cloudflared}
