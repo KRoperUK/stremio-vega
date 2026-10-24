@@ -65,12 +65,14 @@ const INIT_SCRIPT = `
 
   // (2) Force player settings once the core transport is available:
   //   - gamepadSupport: on, so the remote drives the on-screen controls.
-  //   - streamingServerUrl: the self-hosted backend. stremio-web is served from
-  //     the same origin over HTTPS and the streaming server sits behind a
-  //     secret token path on that origin (see src/config.ts). Without a
-  //     reachable streaming server, most addon/torrent streams are handed to
-  //     the player un-remuxed and stall on Vega's W3C media pipeline (poster ->
-  //     black, time advances, no frames).
+  //   - streamingServerUrl: the self-hosted backend (see src/config.ts).
+  //
+  // Mirrors stremio-web's own "use this server" callback: dispatch AddServerUrl
+  // (registers it in the server list so the app does NOT pop a confirm dialog
+  // for a non-loopback URL), then UpdateSettings to select it. We do not read
+  // localStorage — this build keeps the profile in the WASM core, so we spread
+  // the live settings from the core model when we can and otherwise send just
+  // the keys we are forcing. Re-applied on each load; no-ops once correct.
   var FORCED_SERVER_URL = '${config.streamingServerUrl}';
   var tries = 0;
   var timer = setInterval(function () {
@@ -82,35 +84,36 @@ const INIT_SCRIPT = `
     var core = window.core;
     if (!core || typeof core.dispatch !== 'function') return;
 
+    // Best-effort read of the live settings from the core model, so we spread
+    // rather than clobber. Falls back to empty if the shape is not as expected.
     var settings = {};
     try {
-      var stored = window.localStorage.getItem('profile');
-      if (stored) {
-        var profile = JSON.parse(stored);
-        if (profile && profile.settings) {
-          settings = profile.settings;
-          if (
-            settings.gamepadSupport === true &&
-            settings.streamingServerUrl === FORCED_SERVER_URL
-          ) {
-            clearInterval(timer); // already as desired, nothing to do
-            return;
-          }
+      if (typeof core.getState === 'function') {
+        var st = core.getState('ctx');
+        if (st && st.profile && st.profile.settings) {
+          settings = st.profile.settings;
         }
       }
     } catch (err) {
       /* fall through with empty settings */
     }
 
-    var next = Object.assign({}, settings, {
-      gamepadSupport: true,
-      streamingServerUrl: FORCED_SERVER_URL,
-    });
+    if (
+      settings.gamepadSupport === true &&
+      settings.streamingServerUrl === FORCED_SERVER_URL
+    ) {
+      clearInterval(timer); // already as desired
+      return;
+    }
+
     try {
-      core.dispatch({
-        action: 'Ctx',
-        args: {action: 'UpdateSettings', args: next},
+      // Register the server first so no confirm dialog is shown.
+      core.dispatch({action: 'Ctx', args: {action: 'AddServerUrl', args: FORCED_SERVER_URL}});
+      var next = Object.assign({}, settings, {
+        gamepadSupport: true,
+        streamingServerUrl: FORCED_SERVER_URL,
       });
+      core.dispatch({action: 'Ctx', args: {action: 'UpdateSettings', args: next}});
       clearInterval(timer);
     } catch (err) {
       /* retry on next tick */
