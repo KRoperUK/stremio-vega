@@ -1,0 +1,62 @@
+# Stremio-Vega backend stack.
+#
+# One origin serves two things to the Vega app:
+#   1. the self-hosted stremio-web UI (static files), and
+#   2. a reverse proxy to the Stremio streaming server (torrent/addon remux +
+#      transcode), with permissive CORS so the web client can read its responses.
+#
+# Both sit behind a secret path prefix (${SERVER_TOKEN}) enforced by the web
+# container, so the public hostname is not an open transcoder for anyone who
+# finds it. The TV client cannot present a client cert or custom auth header
+# through its WebView fetch layer, and the Vega SDK exposes no device serial, so
+# a secret URL-path token is the one scheme that works end to end.
+#
+# Env (supplied at deploy time; see .env.example):
+#   SERVER_TOKEN  long random string, the secret path segment
+#   WEB_IMAGE     stremio-web image/build ref (built by this stack)
+services:
+  streaming-server:
+    image: stremio/server:latest
+    container_name: stremio-vega-server
+    restart: unless-stopped
+    # Not published to the host — only the web container reaches it over the
+    # internal network. No direct public path to the unauthenticated server.
+    expose:
+      - "11470"
+    environment:
+      # The Stremio server bundles ffmpeg and transcodes non-directly-playable
+      # streams on the fly. This is what converts a stream whose codec/container
+      # the Vega GStreamer pipeline cannot decode (e.g. MPEG-2, Xvid, some MKV
+      # audio) into a Vega-playable HLS stream, instead of handing the player
+      # raw bytes it stalls on (the poster -> black-screen symptom).
+      #
+      # NOTE: transcode tuning (horsepower, max width, hw-accel) is NOT set by
+      # env vars — the server stores it in its own settings, reachable via the
+      # /settings POST API or the client's Streaming settings. The shipped
+      # defaults are already correct for this box: software transcode
+      # (no GPU), horsepower 0.75, max width 1920. The only transcode-relevant
+      # env vars the server reads are NO_CORS and FFMPEG_BIN.
+      NO_CORS: "1"
+    networks:
+      - internal
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: stremio-vega-web
+    restart: unless-stopped
+    depends_on:
+      - streaming-server
+    environment:
+      SERVER_TOKEN: ${SERVER_TOKEN:?SERVER_TOKEN is required}
+    # Published only to loopback on the host; the Cloudflare tunnel (configured
+    # out-of-band) is what exposes it publicly over HTTPS.
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:80"
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge

@@ -8,6 +8,8 @@
 dist
 build
 .stremio-web-build
+.stremio-proxy
+.vega/logs
 node_modules
 CMakeUserPresets.json
 npm-debug.log
