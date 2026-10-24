@@ -28,6 +28,12 @@ export function apiUrl(path: string, params: Record<string, string> = {}): strin
   return url.toString();
 }
 
+// Build the token-gated /api/subtitle URL that proxies + converts a subtitle
+// file to WebVTT for a <track>.
+export function subtitleUrl(fileUrl: string): string {
+  return apiUrl('subtitle', {url: fileUrl});
+}
+
 // Default addons: toggleable, user cannot delete these two but can disable them.
 export interface AddonDef {
   id: string;
@@ -54,6 +60,17 @@ export const DEFAULT_ADDONS: AddonDef[] = [
     // Dracula all resolve to H.264/AAC MP4 — Vega-native, so they pass through
     // the server without transcoding).
     manifestUrl: 'https://dev.nebulawp.org/stremio/archive.org-addon/manifest.json',
+    builtin: true,
+    enabled: true,
+  },
+  {
+    id: 'opensubtitles-v3',
+    name: 'OpenSubtitles v3 (subtitles)',
+    // Subtitle-only addon (resources: ['subtitles']): serves SRT files keyed by
+    // the same IMDb id. The server's /api/subtitle route proxies and converts
+    // them to WebVTT for the <track>. Verified live Oct 2026 (69 subs for
+    // Night of the Living Dead).
+    manifestUrl: 'https://opensubtitles-v3.strem.io/manifest.json',
     builtin: true,
     enabled: true,
   },

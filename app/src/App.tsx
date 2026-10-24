@@ -5,15 +5,17 @@ import {
   getManifest,
   getMeta,
   getStreams,
+  getSubtitles,
   hasResource,
   type Manifest,
   type MetaDetail,
   type MetaPreview,
   type Stream,
+  type Subtitle,
 } from './addon';
 import {Player} from './Player';
 import {useSpatialNav, focusFirst} from './useSpatialNav';
-import {useRecent, recentToPreview} from './useRecent';
+import {useRecent, recentToPreview, recentKey} from './useRecent';
 import type {AddonDef} from './config';
 
 type View =
@@ -66,8 +68,13 @@ export function App() {
   // View history stack — the bottom is always Home, so Back pops one level and
   // only exits the app when already at the root.
   const [stack, setStack] = useState<View[]>([{name: 'home'}]);
-  const [playing, setPlaying] = useState<Stream | null>(null);
-  const {recent, record} = useRecent();
+  const [playing, setPlaying] = useState<{
+    stream: Stream;
+    subtitles: Subtitle[];
+    resumeKey: string;
+    startAt: number;
+  } | null>(null);
+  const {recent, record, setPosition, positionFor} = useRecent();
 
   const view = stack[stack.length - 1];
 
@@ -127,13 +134,23 @@ export function App() {
 
   const catalogAddons = enabled.filter((a) => manifests[a.manifestUrl] && hasResource(manifests[a.manifestUrl], 'catalog'));
 
-  // Start a stream and record it in "Continue watching".
+  // Start a stream and record it in "Continue watching". Carries subtitles and
+  // resumes from the saved position for this exact item.
   const playStream = useCallback(
     (
       s: Stream,
-      ctx: {meta: {id: string; type: string; name: string; poster?: string} | null; videoId?: string; label?: string},
+      ctx: {
+        meta: {id: string; type: string; name: string; poster?: string} | null;
+        videoId?: string;
+        label?: string;
+        subtitles?: Subtitle[];
+      },
     ) => {
+      let resumeKey = '';
+      let startAt = 0;
       if (ctx.meta) {
+        resumeKey = recentKey(ctx.meta.type, ctx.meta.id, ctx.videoId);
+        startAt = positionFor(resumeKey);
         record({
           type: ctx.meta.type,
           id: ctx.meta.id,
@@ -143,9 +160,9 @@ export function App() {
           label: ctx.label,
         });
       }
-      setPlaying(s);
+      setPlaying({stream: s, subtitles: ctx.subtitles ?? [], resumeKey, startAt});
     },
-    [record],
+    [record, positionFor],
   );
 
   return (
@@ -184,7 +201,17 @@ export function App() {
         )}
       </main>
 
-      {playing && <Player stream={playing} onClose={() => setPlaying(null)} />}
+      {playing && (
+        <Player
+          stream={playing.stream}
+          subtitles={playing.subtitles}
+          startAt={playing.startAt}
+          onProgress={(pos, dur) => {
+            if (playing.resumeKey) setPosition(playing.resumeKey, pos, dur);
+          }}
+          onClose={() => setPlaying(null)}
+        />
+      )}
     </div>
   );
 }
@@ -338,7 +365,10 @@ function Detail({
   id: string;
   addons: AddonDef[];
   manifests: Record<string, Manifest>;
-  onPlay: (s: Stream, ctx: {meta: MetaDetail | null; videoId?: string; label?: string}) => void;
+  onPlay: (
+    s: Stream,
+    ctx: {meta: MetaDetail | null; videoId?: string; label?: string; subtitles?: Subtitle[]},
+  ) => void;
   onBack: () => void;
 }) {
   const [meta, setMeta] = useState<MetaDetail | null>(null);
@@ -347,6 +377,7 @@ function Detail({
   const [selected, setSelected] = useState<{videoId: string; label: string} | null>(null);
   const [streams, setStreams] = useState<Stream[] | null>(null);
   const [streamStatus, setStreamStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   // Bumped by the Retry buttons to re-run the effects.
   const [attempt, setAttempt] = useState(0);
 
@@ -398,6 +429,7 @@ function Detail({
     let cancelled = false;
     setStreamStatus('loading');
     setStreams(null);
+    setSubtitles([]);
     (async () => {
       const all: Stream[] = [];
       let sawAddon = false;
@@ -417,6 +449,28 @@ function Detail({
       if (cancelled) return;
       setStreams(all);
       setStreamStatus(all.length === 0 && anyError && sawAddon ? 'error' : 'ready');
+
+      // Subtitles are best-effort and must never block or error the stream UI.
+      const subs: Subtitle[] = [];
+      const seenLang = new Set<string>();
+      for (const a of addons) {
+        const m = manifests[a.manifestUrl];
+        if (m && hasResource(m, 'subtitles', type)) {
+          try {
+            const {subtitles} = await getSubtitles(a.manifestUrl, type, streamId);
+            for (const s of subtitles || []) {
+              // One entry per language keeps the picker short.
+              if (s.url && !seenLang.has(s.lang)) {
+                seenLang.add(s.lang);
+                subs.push(s);
+              }
+            }
+          } catch {
+            /* skip addon */
+          }
+        }
+      }
+      if (!cancelled) setSubtitles(subs);
     })();
     return () => {
       cancelled = true;
@@ -489,7 +543,7 @@ function Detail({
                 <li key={i}>
                   <button
                     onClick={() =>
-                      onPlay(s, {meta, videoId: selected?.videoId, label: selected?.label})
+                      onPlay(s, {meta, videoId: selected?.videoId, label: selected?.label, subtitles})
                     }
                   >
                     ▶ {s.name || s.title || s.description || `Stream ${i + 1}`}
