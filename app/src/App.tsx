@@ -12,6 +12,7 @@ import {
   type Stream,
 } from './addon';
 import {Player} from './Player';
+import {useSpatialNav, focusFirst} from './useSpatialNav';
 import type {AddonDef} from './config';
 
 type View =
@@ -68,6 +69,19 @@ export function App() {
 
   const view = stack[stack.length - 1];
 
+  // D-pad / remote focus navigation (arrow keys move focus, Enter activates).
+  useSpatialNav();
+
+  // When the view changes (or the player closes), move focus to the first
+  // actionable element so the remote always has a starting point. Deferred a
+  // tick so the new view has rendered. While the player is open we leave focus
+  // on the <video> (the Player focuses it itself).
+  useEffect(() => {
+    if (playing) return;
+    const id = setTimeout(() => focusFirst(document.querySelector('.content') ?? document), 60);
+    return () => clearTimeout(id);
+  }, [view.name, view.name === 'detail' ? view.id : '', playing]);
+
   const go = useCallback((next: View) => {
     setStack((s) => {
       // Opening a detail page pushes onto the stack (so Back returns to where
@@ -120,25 +134,27 @@ export function App() {
         <button onClick={() => go({name: 'addons'})}>Addons</button>
       </nav>
 
-      {view.name === 'home' && (
-        <Home catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
-      )}
-      {view.name === 'search' && (
-        <Search catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
-      )}
-      {view.name === 'detail' && (
-        <Detail
-          type={view.type}
-          id={view.id}
-          addons={enabled}
-          manifests={manifests}
-          onPlay={setPlaying}
-          onBack={back}
-        />
-      )}
-      {view.name === 'addons' && (
-        <Addons addons={addons} toggle={toggle} add={add} remove={remove} />
-      )}
+      <main className="content">
+        {view.name === 'home' && (
+          <Home catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
+        )}
+        {view.name === 'search' && (
+          <Search catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
+        )}
+        {view.name === 'detail' && (
+          <Detail
+            type={view.type}
+            id={view.id}
+            addons={enabled}
+            manifests={manifests}
+            onPlay={setPlaying}
+            onBack={back}
+          />
+        )}
+        {view.name === 'addons' && (
+          <Addons addons={addons} toggle={toggle} add={add} remove={remove} />
+        )}
+      </main>
 
       {playing && <Player stream={playing} onClose={() => setPlaying(null)} />}
     </div>

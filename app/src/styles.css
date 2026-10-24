@@ -17,6 +17,14 @@ body,
   margin: 0;
   height: 100%;
 }
+html {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
 body {
   background: var(--bg);
   color: var(--text);
@@ -55,12 +63,26 @@ button {
   border-radius: 10px;
   padding: 10px 18px;
   cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
+/* Focus is the single most important cue on a remote-driven TV UI, so make it
+   loud: accent ring, lift, and a glow. Applies to any focused control/card. */
 button:focus,
-.card:focus {
+button:focus-visible,
+.card:focus,
+.card:focus-visible,
+[data-focusable]:focus {
   outline: none;
   border-color: var(--focus);
-  transform: scale(1.04);
+  transform: scale(1.06);
+  box-shadow: 0 0 0 3px rgba(0, 212, 170, 0.35), 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 2;
+}
+/* Keep a focused item clear of the sticky top bar when scrolled into view. */
+button,
+.card,
+[data-focusable] {
+  scroll-margin: 96px 24px;
 }
 input {
   background: var(--surface-2);
@@ -68,10 +90,24 @@ input {
   border-radius: 10px;
   padding: 10px 14px;
   min-width: 280px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 input:focus {
   border-color: var(--focus);
   outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 212, 170, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  input {
+    transition: none;
+  }
+  button:focus,
+  .card:focus,
+  [data-focusable]:focus {
+    transform: none;
+  }
 }
 
 .rows {
