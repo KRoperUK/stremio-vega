@@ -5,6 +5,13 @@ title = "Basic UI React Native Application for project stremiovega"
 version = "0.1.0"
 id = "com.stremiovega.app"
 
+# WebView 4.0.2+ blocks cleartext HTTP by default. This app loads its UI from a
+# self-hosted stremio-web build over HTTP (http://10.0.2.2:8080) and talks to a
+# local Stremio streaming server over HTTP (http://10.0.2.2:11470), and addon
+# streams arrive from arbitrary HTTP hosts, so allow cleartext for all domains.
+[network-traffic-policy.cleartext]
+allowed-domains = ["*"]
+
 [os.version]
 min = "1.2"
 target = "1.2"
