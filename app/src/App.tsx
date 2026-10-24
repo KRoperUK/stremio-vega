@@ -13,6 +13,7 @@ import {
 } from './addon';
 import {Player} from './Player';
 import {useSpatialNav, focusFirst} from './useSpatialNav';
+import {useRecent, recentToPreview} from './useRecent';
 import type {AddonDef} from './config';
 
 type View =
@@ -66,6 +67,7 @@ export function App() {
   // only exits the app when already at the root.
   const [stack, setStack] = useState<View[]>([{name: 'home'}]);
   const [playing, setPlaying] = useState<Stream | null>(null);
+  const {recent, record} = useRecent();
 
   const view = stack[stack.length - 1];
 
@@ -125,6 +127,27 @@ export function App() {
 
   const catalogAddons = enabled.filter((a) => manifests[a.manifestUrl] && hasResource(manifests[a.manifestUrl], 'catalog'));
 
+  // Start a stream and record it in "Continue watching".
+  const playStream = useCallback(
+    (
+      s: Stream,
+      ctx: {meta: {id: string; type: string; name: string; poster?: string} | null; videoId?: string; label?: string},
+    ) => {
+      if (ctx.meta) {
+        record({
+          type: ctx.meta.type,
+          id: ctx.meta.id,
+          name: ctx.meta.name,
+          poster: ctx.meta.poster,
+          videoId: ctx.videoId,
+          label: ctx.label,
+        });
+      }
+      setPlaying(s);
+    },
+    [record],
+  );
+
   return (
     <div className="app">
       <nav className="topbar">
@@ -136,7 +159,12 @@ export function App() {
 
       <main className="content">
         {view.name === 'home' && (
-          <Home catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
+          <Home
+            catalogAddons={catalogAddons}
+            manifests={manifests}
+            recent={recent.map(recentToPreview)}
+            onOpen={(t, id) => go({name: 'detail', type: t, id})}
+          />
         )}
         {view.name === 'search' && (
           <Search catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
@@ -147,7 +175,7 @@ export function App() {
             id={view.id}
             addons={enabled}
             manifests={manifests}
-            onPlay={setPlaying}
+            onPlay={playStream}
             onBack={back}
           />
         )}
@@ -177,40 +205,65 @@ function Grid({metas, onOpen}: {metas: MetaPreview[]; onOpen: (t: string, id: st
 function Home({
   catalogAddons,
   manifests,
+  recent,
   onOpen,
 }: {
   catalogAddons: AddonDef[];
   manifests: Record<string, Manifest>;
+  recent: MetaPreview[];
   onOpen: (t: string, id: string) => void;
 }) {
   const [rows, setRows] = useState<{title: string; metas: MetaPreview[]}[]>([]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [attempt, setAttempt] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
+    setStatus('loading');
     (async () => {
       const out: {title: string; metas: MetaPreview[]}[] = [];
+      let sawCatalog = false;
+      let anyError = false;
       for (const a of catalogAddons) {
         const m = manifests[a.manifestUrl];
         for (const cat of (m.catalogs || []).slice(0, 4)) {
           // skip search-only catalogs here
           if ((cat.extra || []).some((e) => e.name === 'search' && e.isRequired)) continue;
+          sawCatalog = true;
           try {
             const {metas} = await getCatalog(a.manifestUrl, cat.type, cat.id);
             if (metas?.length) out.push({title: `${cat.name || cat.id} (${cat.type})`, metas: metas.slice(0, 20)});
           } catch {
-            /* skip failing catalog */
+            anyError = true;
           }
         }
       }
-      if (!cancelled) setRows(out);
+      if (cancelled) return;
+      setRows(out);
+      setStatus(out.length === 0 && anyError && sawCatalog ? 'error' : 'ready');
     })();
     return () => {
       cancelled = true;
     };
-  }, [catalogAddons.map((a) => a.manifestUrl).join(','), manifests]);
+  }, [catalogAddons.map((a) => a.manifestUrl).join(','), manifests, attempt]);
 
-  if (!rows.length) return <p className="hint">Loading catalogs… (enable addons if empty)</p>;
   return (
     <div className="rows">
+      {recent.length > 0 && (
+        <section>
+          <h2>Continue watching</h2>
+          <Grid metas={recent} onOpen={onOpen} />
+        </section>
+      )}
+
+      {status === 'loading' && rows.length === 0 && <Spinner label="Loading catalogs…" />}
+      {status === 'error' && (
+        <ErrorBox label="Couldn't load catalogs." onRetry={() => setAttempt((n) => n + 1)} />
+      )}
+      {status === 'ready' && rows.length === 0 && recent.length === 0 && (
+        <p className="hint">Nothing to show yet — enable an addon with catalogs in the Addons tab.</p>
+      )}
+
       {rows.map((r, i) => (
         <section key={i}>
           <h2>{r.title}</h2>
@@ -285,23 +338,37 @@ function Detail({
   id: string;
   addons: AddonDef[];
   manifests: Record<string, Manifest>;
-  onPlay: (s: Stream) => void;
+  onPlay: (s: Stream, ctx: {meta: MetaDetail | null; videoId?: string; label?: string}) => void;
   onBack: () => void;
 }) {
   const [meta, setMeta] = useState<MetaDetail | null>(null);
+  const [metaStatus, setMetaStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  // For series the user first picks an episode; selected holds its video id.
+  const [selected, setSelected] = useState<{videoId: string; label: string} | null>(null);
   const [streams, setStreams] = useState<Stream[] | null>(null);
+  const [streamStatus, setStreamStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  // Bumped by the Retry buttons to re-run the effects.
+  const [attempt, setAttempt] = useState(0);
 
+  const isSeries = type === 'series';
+
+  // Fetch meta.
   useEffect(() => {
     let cancelled = false;
+    setMetaStatus('loading');
+    setMeta(null);
+    setSelected(null);
     (async () => {
-      // meta from the first addon that has it
+      let found: MetaDetail | null = null;
+      let sawAddon = false;
       for (const a of addons) {
         const m = manifests[a.manifestUrl];
         if (m && hasResource(m, 'meta', type)) {
+          sawAddon = true;
           try {
             const {meta} = await getMeta(a.manifestUrl, type, id);
-            if (!cancelled && meta) {
-              setMeta(meta);
+            if (meta) {
+              found = meta;
               break;
             }
           } catch {
@@ -309,31 +376,71 @@ function Detail({
           }
         }
       }
-      // streams from every addon that provides them
-      const all: Stream[] = [];
-      for (const a of addons) {
-        const m = manifests[a.manifestUrl];
-        if (m && hasResource(m, 'stream', type)) {
-          try {
-            const {streams} = await getStreams(a.manifestUrl, type, id);
-            for (const s of streams || []) all.push(s);
-          } catch {
-            /* skip */
-          }
-        }
-      }
-      if (!cancelled) setStreams(all);
+      if (cancelled) return;
+      setMeta(found);
+      setMetaStatus(found || !sawAddon ? 'ready' : 'error');
     })();
     return () => {
       cancelled = true;
     };
-  }, [type, id, addons.map((a) => a.manifestUrl).join(','), manifests]);
+  }, [type, id, addons.map((a) => a.manifestUrl).join(','), manifests, attempt]);
+
+  // Fetch streams. For a movie, as soon as meta is ready; for a series, once an
+  // episode is selected (streams are keyed by the episode's video id).
+  const streamId = isSeries ? selected?.videoId : id;
+  useEffect(() => {
+    if (isSeries && !selected) {
+      setStreams(null);
+      setStreamStatus('idle');
+      return;
+    }
+    if (!streamId) return;
+    let cancelled = false;
+    setStreamStatus('loading');
+    setStreams(null);
+    (async () => {
+      const all: Stream[] = [];
+      let sawAddon = false;
+      let anyError = false;
+      for (const a of addons) {
+        const m = manifests[a.manifestUrl];
+        if (m && hasResource(m, 'stream', type)) {
+          sawAddon = true;
+          try {
+            const {streams} = await getStreams(a.manifestUrl, type, streamId);
+            for (const s of streams || []) all.push(s);
+          } catch {
+            anyError = true;
+          }
+        }
+      }
+      if (cancelled) return;
+      setStreams(all);
+      setStreamStatus(all.length === 0 && anyError && sawAddon ? 'error' : 'ready');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [streamId, isSeries, selected, type, addons.map((a) => a.manifestUrl).join(','), manifests, attempt]);
+
+  const episodes = (meta?.videos || [])
+    .slice()
+    .sort((a, b) => (a.season ?? 0) - (b.season ?? 0) || (a.episode ?? 0) - (b.episode ?? 0));
+
+  const epLabel = (v: {season?: number; episode?: number; title?: string}) =>
+    v.season != null && v.episode != null ? `S${v.season}E${v.episode}` : v.title || 'Episode';
 
   return (
     <div className="detail">
       <button className="back" onClick={onBack}>
         ← Back
       </button>
+
+      {metaStatus === 'loading' && <Spinner label="Loading…" />}
+      {metaStatus === 'error' && (
+        <ErrorBox label="Couldn't load details." onRetry={() => setAttempt((n) => n + 1)} />
+      )}
+
       {meta && (
         <div className="detail-head" style={meta.background ? {backgroundImage: `url(${meta.background})`} : undefined}>
           <h1>{meta.name}</h1>
@@ -341,18 +448,75 @@ function Detail({
           {meta.description && <p>{meta.description}</p>}
         </div>
       )}
-      <h2>Streams</h2>
-      {streams === null && <p className="hint">Finding streams…</p>}
-      {streams?.length === 0 && <p className="hint">No streams from enabled addons.</p>}
-      <ul className="streams">
-        {(streams || [])
-          .filter((s) => s.url)
-          .map((s, i) => (
-            <li key={i}>
-              <button onClick={() => onPlay(s)}>▶ {s.name || s.title || s.description || `Stream ${i + 1}`}</button>
-            </li>
-          ))}
-      </ul>
+
+      {isSeries && episodes.length > 0 && (
+        <>
+          <h2>Episodes</h2>
+          <ul className="streams">
+            {episodes.map((v) => {
+              const label = epLabel(v);
+              const active = selected?.videoId === v.id;
+              return (
+                <li key={v.id}>
+                  <button
+                    className={active ? 'episode active' : 'episode'}
+                    onClick={() => setSelected({videoId: v.id, label})}
+                  >
+                    {label}
+                    {v.title ? ` · ${v.title}` : ''}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
+      {(!isSeries || selected) && (
+        <>
+          <h2>Streams{isSeries && selected ? ` · ${selected.label}` : ''}</h2>
+          {streamStatus === 'loading' && <Spinner label="Finding streams…" />}
+          {streamStatus === 'error' && (
+            <ErrorBox label="Couldn't fetch streams." onRetry={() => setAttempt((n) => n + 1)} />
+          )}
+          {streamStatus === 'ready' && streams?.length === 0 && (
+            <p className="hint">No streams from enabled addons.</p>
+          )}
+          <ul className="streams">
+            {(streams || [])
+              .filter((s) => s.url)
+              .map((s, i) => (
+                <li key={i}>
+                  <button
+                    onClick={() =>
+                      onPlay(s, {meta, videoId: selected?.videoId, label: selected?.label})
+                    }
+                  >
+                    ▶ {s.name || s.title || s.description || `Stream ${i + 1}`}
+                  </button>
+                </li>
+              ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Spinner({label}: {label: string}) {
+  return (
+    <div className="loading" role="status" aria-live="polite">
+      <span className="spinner" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function ErrorBox({label, onRetry}: {label: string; onRetry: () => void}) {
+  return (
+    <div className="errorbox" role="alert">
+      <span>{label}</span>
+      <button onClick={onRetry}>Retry</button>
     </div>
   );
 }
