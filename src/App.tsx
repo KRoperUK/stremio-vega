@@ -120,6 +120,16 @@ const INIT_SCRIPT = `
 true;
 `;
 
+// stremio-web reads a `streamingServerUrl` query parameter on load and, via its
+// own code, adds + selects + connects that server (AddServerUrl + UpdateSettings).
+// This is the robust, version-stable way to prefill the server — far more
+// reliable than poking window.core from injected JS, which depends on the
+// core transport being ready and on the exact action shape. The INIT_SCRIPT
+// dispatch above stays as a belt-and-braces fallback (and for gamepadSupport).
+const SOURCE_URI =
+  `${config.baseUrl}?streamingServerUrl=` +
+  encodeURIComponent(config.streamingServerUrl);
+
 export const App = () => {
   const webRef = useRef<WebViewMethods | null>(null);
   const canGoBackRef = useRef(false);
@@ -177,9 +187,11 @@ export const App = () => {
         source={{
           // headers: {},
           // Self-hosted stremio-web served over HTTPS from the backend
-          // (src/config.ts). Same HTTPS origin as the streaming server, so no
-          // mixed-content block, and no dependency on any host-local address.
-          uri: config.baseUrl,
+          // (src/config.ts). The ?streamingServerUrl= query param makes
+          // stremio-web add + connect the server itself on load — see
+          // SOURCE_URI above. Same HTTPS origin as the streaming server, so no
+          // mixed-content block and no host-local dependency.
+          uri: SOURCE_URI,
         }}
         onLoad={onLoad}
         onLoadStart={onLoadStart}
