@@ -27,7 +27,9 @@ COPY --from=webbuild /src/build /usr/share/nginx/html
 
 # nginx config is rendered from a template at container start so the secret
 # token path is injected from the environment (never baked into the image).
-COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
+# Build context is deploy/ (see docker-compose.yml), so this path is relative
+# to that, not the repo root.
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 
 # nginx:alpine runs envsubst over /etc/nginx/templates/*.template on startup,
 # writing the result to /etc/nginx/conf.d/. ${SERVER_TOKEN} is substituted then.
