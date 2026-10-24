@@ -70,7 +70,12 @@ export function useRecent() {
 
   const clear = useCallback(() => setRecent([]), []);
 
-  return {recent, record, setPosition, positionFor, clear};
+  // Drop one item from the list by its stable key.
+  const remove = useCallback((key: string) => {
+    setRecent((prev) => prev.filter((r) => recentKey(r.type, r.id, r.videoId) !== key));
+  }, []);
+
+  return {recent, record, setPosition, positionFor, clear, remove};
 }
 
 // Convenience: build the MetaPreview a Grid expects from a RecentItem.

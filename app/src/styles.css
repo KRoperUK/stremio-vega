@@ -138,6 +138,24 @@ input:focus {
 .load-more {
   margin-top: 12px;
 }
+.row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.see-all {
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: 15px;
+}
+.browse {
+  padding: 24px 32px;
+}
+.browse .back {
+  margin-bottom: 8px;
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -166,6 +184,53 @@ input:focus {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Continue-watching card: a positioned wrapper holding the poster button, a
+   resume progress bar, and a remove (X) button. */
+.card.continue {
+  position: relative;
+  padding: 0;
+  background: var(--surface);
+  display: block;
+}
+.card.continue .card-main {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  background: transparent;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.card.continue .card-main img,
+.card.continue .card-main .noposter {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.progress {
+  display: block;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.18);
+}
+.progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--focus);
+}
+.card.continue .remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(11, 14, 23, 0.8);
+  line-height: 1;
 }
 
 .search,
