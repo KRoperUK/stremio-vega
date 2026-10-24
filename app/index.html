@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vega Stream</title>
+    <!--
+      The streaming server rewrites this placeholder at serve time to inject the
+      same-origin base and the secret token, so the built app ships no secret.
+      When served statically without rewriting, serverBase '' = same origin and
+      an empty token is fine for a local/no-auth run.
+    -->
+    <script>
+      window.__VEGA_CONFIG__ = {serverBase: '', token: '__VEGA_TOKEN__'};
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
