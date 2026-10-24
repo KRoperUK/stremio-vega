@@ -15,13 +15,14 @@ import {
 } from './addon';
 import {Player} from './Player';
 import {useSpatialNav, focusFirst} from './useSpatialNav';
-import {useRecent, recentToPreview, recentKey} from './useRecent';
+import {useRecent, recentKey, type RecentItem} from './useRecent';
 import type {AddonDef} from './config';
 
 type View =
   | {name: 'home'}
   | {name: 'search'}
   | {name: 'detail'; type: string; id: string}
+  | {name: 'browse'; manifestUrl: string; catType: string; catId: string; title: string}
   | {name: 'addons'};
 
 // Resolve each enabled addon's manifest once, cache it.
@@ -74,7 +75,7 @@ export function App() {
     resumeKey: string;
     startAt: number;
   } | null>(null);
-  const {recent, record, setPosition, positionFor} = useRecent();
+  const {recent, record, setPosition, positionFor, remove: removeRecent} = useRecent();
 
   const view = stack[stack.length - 1];
 
@@ -97,7 +98,7 @@ export function App() {
       // you were). Top-nav targets (home/search/addons) replace the stack with
       // [home] (+ the target), so Back from a top-level view exits rather than
       // cycling through the other tabs.
-      if (next.name === 'detail') return [...s, next];
+      if (next.name === 'detail' || next.name === 'browse') return [...s, next];
       const top = s[s.length - 1];
       if (top.name === next.name) return s;
       return next.name === 'home' ? [{name: 'home'}] : [{name: 'home'}, next];
@@ -179,12 +180,27 @@ export function App() {
           <Home
             catalogAddons={catalogAddons}
             manifests={manifests}
-            recent={recent.map(recentToPreview)}
+            recent={recent}
+            onRemoveRecent={removeRecent}
             onOpen={(t, id) => go({name: 'detail', type: t, id})}
+            onBrowse={(manifestUrl, catType, catId, title) =>
+              go({name: 'browse', manifestUrl, catType, catId, title})
+            }
           />
         )}
         {view.name === 'search' && (
           <Search catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
+        )}
+        {view.name === 'browse' && (
+          <Browse
+            manifestUrl={view.manifestUrl}
+            catType={view.catType}
+            catId={view.catId}
+            title={view.title}
+            manifests={manifests}
+            onOpen={(t, id) => go({name: 'detail', type: t, id})}
+            onBack={back}
+          />
         )}
         {view.name === 'detail' && (
           <Detail
@@ -207,7 +223,14 @@ export function App() {
           subtitles={playing.subtitles}
           startAt={playing.startAt}
           onProgress={(pos, dur) => {
-            if (playing.resumeKey) setPosition(playing.resumeKey, pos, dur);
+            if (!playing.resumeKey) return;
+            // Near the end (~95%): the item is effectively watched — drop it
+            // from Continue watching rather than leaving it stuck at the end.
+            if (dur > 0 && pos / dur >= 0.95) {
+              removeRecent(playing.resumeKey);
+            } else {
+              setPosition(playing.resumeKey, pos, dur);
+            }
           }}
           onClose={() => setPlaying(null)}
         />
@@ -219,12 +242,68 @@ export function App() {
 function Grid({metas, onOpen}: {metas: MetaPreview[]; onOpen: (t: string, id: string) => void}) {
   return (
     <div className="grid">
-      {metas.map((m) => (
-        <button key={m.type + m.id} className="card" onClick={() => onOpen(m.type, m.id)}>
-          {m.poster ? <img src={m.poster} alt={m.name} loading="lazy" /> : <div className="noposter" />}
-          <span className="card-title">{m.name}</span>
-        </button>
-      ))}
+      {metas.map((m) => {
+        const year = m.year || m.releaseInfo;
+        const rating = m.imdbRating && m.imdbRating.trim();
+        return (
+          <button key={m.type + m.id} className="card" onClick={() => onOpen(m.type, m.id)}>
+            <span className="poster-wrap">
+              {m.poster ? <img src={m.poster} alt={m.name} loading="lazy" /> : <div className="noposter" />}
+              {rating && <span className="badge rating">★ {rating}</span>}
+              {year && <span className="badge year">{year}</span>}
+            </span>
+            <span className="card-title">{m.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Continue-watching row: each card shows a resume progress bar and an X to
+// remove it from the list.
+function ContinueRow({
+  items,
+  onOpen,
+  onRemove,
+}: {
+  items: RecentItem[];
+  onOpen: (t: string, id: string) => void;
+  onRemove: (key: string) => void;
+}) {
+  return (
+    <div className="grid">
+      {items.map((r) => {
+        const key = recentKey(r.type, r.id, r.videoId);
+        const pct =
+          r.position && r.duration && r.duration > 0
+            ? Math.min(100, Math.round((r.position / r.duration) * 100))
+            : 0;
+        return (
+          <div key={key} className="card continue">
+            <button className="card-main" onClick={() => onOpen(r.type, r.id)}>
+              {r.poster ? <img src={r.poster} alt={r.name} loading="lazy" /> : <div className="noposter" />}
+              {pct > 0 && (
+                <span className="progress" aria-label={`${pct}% watched`}>
+                  <span className="progress-fill" style={{width: `${pct}%`}} />
+                </span>
+              )}
+              <span className="card-title">
+                {r.name}
+                {r.label ? ` · ${r.label}` : ''}
+              </span>
+            </button>
+            <button
+              className="remove"
+              aria-label={`Remove ${r.name} from Continue watching`}
+              title="Remove"
+              onClick={() => onRemove(key)}
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -248,12 +327,16 @@ function Home({
   catalogAddons,
   manifests,
   recent,
+  onRemoveRecent,
   onOpen,
+  onBrowse,
 }: {
   catalogAddons: AddonDef[];
   manifests: Record<string, Manifest>;
-  recent: MetaPreview[];
+  recent: RecentItem[];
+  onRemoveRecent: (key: string) => void;
   onOpen: (t: string, id: string) => void;
+  onBrowse: (manifestUrl: string, catType: string, catId: string, title: string) => void;
 }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -360,7 +443,7 @@ function Home({
       {recent.length > 0 && (
         <section>
           <h2>Continue watching</h2>
-          <Grid metas={recent} onOpen={onOpen} />
+          <ContinueRow items={recent} onOpen={onOpen} onRemove={onRemoveRecent} />
         </section>
       )}
 
@@ -393,7 +476,12 @@ function Home({
 
       {rows.map((r) => (
         <section key={r.key}>
-          <h2>{r.title}</h2>
+          <div className="row-head">
+            <h2>{r.title}</h2>
+            <button className="see-all" onClick={() => onBrowse(r.manifestUrl, r.catType, r.catId, r.title)}>
+              See all →
+            </button>
+          </div>
           <Grid metas={r.metas} onOpen={onOpen} />
           {r.hasMore && (
             <button className="load-more" disabled={r.loadingMore} onClick={() => void loadMore(r.key)}>
@@ -454,6 +542,120 @@ function Search({
         <button type="submit">Go</button>
       </form>
       <Grid metas={metas} onOpen={onOpen} />
+    </div>
+  );
+}
+
+// Browse: a full grid for a single catalog, with its own genre filter and
+// "Load more" pagination — reached from a row's "See all".
+function Browse({
+  manifestUrl,
+  catType,
+  catId,
+  title,
+  manifests,
+  onOpen,
+  onBack,
+}: {
+  manifestUrl: string;
+  catType: string;
+  catId: string;
+  title: string;
+  manifests: Record<string, Manifest>;
+  onOpen: (t: string, id: string) => void;
+  onBack: () => void;
+}) {
+  const [metas, setMetas] = useState<MetaPreview[]>([]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [skip, setSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [genre, setGenre] = useState('');
+  const [attempt, setAttempt] = useState(0);
+
+  const cat = (manifests[manifestUrl]?.catalogs || []).find((c) => c.type === catType && c.id === catId);
+  const supportsGenre = (cat?.extra || []).some((e) => e.name === 'genre');
+  const genres = ((cat?.extra || []).find((e) => e.name === 'genre')?.options || []).slice(0, 30);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatus('loading');
+    setMetas([]);
+    (async () => {
+      const extra: Record<string, string> = {};
+      if (genre && supportsGenre) extra.genre = genre;
+      try {
+        const {metas} = await getCatalog(manifestUrl, catType, catId, extra);
+        if (cancelled) return;
+        const list = metas || [];
+        setMetas(list);
+        setSkip(list.length);
+        setHasMore(list.length >= PAGE);
+        setStatus('ready');
+      } catch {
+        if (!cancelled) setStatus('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestUrl, catType, catId, genre, supportsGenre, attempt]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const extra: Record<string, string> = {skip: String(skip)};
+    if (genre && supportsGenre) extra.genre = genre;
+    try {
+      const {metas: next} = await getCatalog(manifestUrl, catType, catId, extra);
+      const list = next || [];
+      setMetas((prev) => {
+        const seen = new Set(prev.map((m) => m.type + m.id));
+        return [...prev, ...list.filter((m) => !seen.has(m.type + m.id))];
+      });
+      setSkip((s) => s + list.length);
+      setHasMore(list.length >= PAGE);
+    } catch {
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, skip, genre, supportsGenre, manifestUrl, catType, catId]);
+
+  return (
+    <div className="browse">
+      <button className="back" onClick={onBack}>
+        ← Back
+      </button>
+      <h2>{title}</h2>
+
+      {genres.length > 0 && (
+        <div className="genre-bar" role="group" aria-label="Filter by genre">
+          <button className={genre === '' ? 'genre active' : 'genre'} onClick={() => setGenre('')}>
+            All
+          </button>
+          {genres.map((g) => (
+            <button
+              key={g}
+              className={genre === g ? 'genre active' : 'genre'}
+              onClick={() => setGenre(g === genre ? '' : g)}
+            >
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {status === 'loading' && <Spinner label="Loading…" />}
+      {status === 'error' && <ErrorBox label="Couldn't load this catalog." onRetry={() => setAttempt((n) => n + 1)} />}
+      {status === 'ready' && metas.length === 0 && <p className="hint">Nothing here.</p>}
+
+      <Grid metas={metas} onOpen={onOpen} />
+      {hasMore && (
+        <button className="load-more" disabled={loadingMore} onClick={() => void loadMore()}>
+          {loadingMore ? 'Loading…' : 'Load more'}
+        </button>
+      )}
     </div>
   );
 }
