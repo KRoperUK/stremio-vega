@@ -5,7 +5,6 @@ import {App} from '../src/App';
 jest.mock('../src/config', () => ({
   config: {
     baseUrl: 'https://example.test',
-    streamingServerUrl: 'https://example.test/s/test-token/',
   },
 }));
 
