@@ -168,6 +168,53 @@ input:focus {
   text-overflow: ellipsis;
 }
 
+/* Continue-watching card: a positioned wrapper holding the poster button, a
+   resume progress bar, and a remove (X) button. */
+.card.continue {
+  position: relative;
+  padding: 0;
+  background: var(--surface);
+  display: block;
+}
+.card.continue .card-main {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  background: transparent;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.card.continue .card-main img,
+.card.continue .card-main .noposter {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.progress {
+  display: block;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.18);
+}
+.progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--focus);
+}
+.card.continue .remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(11, 14, 23, 0.8);
+  line-height: 1;
+}
+
 .search,
 .detail,
 .addons {

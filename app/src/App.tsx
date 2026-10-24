@@ -15,7 +15,7 @@ import {
 } from './addon';
 import {Player} from './Player';
 import {useSpatialNav, focusFirst} from './useSpatialNav';
-import {useRecent, recentToPreview, recentKey} from './useRecent';
+import {useRecent, recentKey, type RecentItem} from './useRecent';
 import type {AddonDef} from './config';
 
 type View =
@@ -74,7 +74,7 @@ export function App() {
     resumeKey: string;
     startAt: number;
   } | null>(null);
-  const {recent, record, setPosition, positionFor} = useRecent();
+  const {recent, record, setPosition, positionFor, remove: removeRecent} = useRecent();
 
   const view = stack[stack.length - 1];
 
@@ -179,7 +179,8 @@ export function App() {
           <Home
             catalogAddons={catalogAddons}
             manifests={manifests}
-            recent={recent.map(recentToPreview)}
+            recent={recent}
+            onRemoveRecent={removeRecent}
             onOpen={(t, id) => go({name: 'detail', type: t, id})}
           />
         )}
@@ -229,6 +230,54 @@ function Grid({metas, onOpen}: {metas: MetaPreview[]; onOpen: (t: string, id: st
   );
 }
 
+// Continue-watching row: each card shows a resume progress bar and an X to
+// remove it from the list.
+function ContinueRow({
+  items,
+  onOpen,
+  onRemove,
+}: {
+  items: RecentItem[];
+  onOpen: (t: string, id: string) => void;
+  onRemove: (key: string) => void;
+}) {
+  return (
+    <div className="grid">
+      {items.map((r) => {
+        const key = recentKey(r.type, r.id, r.videoId);
+        const pct =
+          r.position && r.duration && r.duration > 0
+            ? Math.min(100, Math.round((r.position / r.duration) * 100))
+            : 0;
+        return (
+          <div key={key} className="card continue">
+            <button className="card-main" onClick={() => onOpen(r.type, r.id)}>
+              {r.poster ? <img src={r.poster} alt={r.name} loading="lazy" /> : <div className="noposter" />}
+              {pct > 0 && (
+                <span className="progress" aria-label={`${pct}% watched`}>
+                  <span className="progress-fill" style={{width: `${pct}%`}} />
+                </span>
+              )}
+              <span className="card-title">
+                {r.name}
+                {r.label ? ` · ${r.label}` : ''}
+              </span>
+            </button>
+            <button
+              className="remove"
+              aria-label={`Remove ${r.name} from Continue watching`}
+              title="Remove"
+              onClick={() => onRemove(key)}
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface Row {
   key: string;
   manifestUrl: string;
@@ -248,11 +297,13 @@ function Home({
   catalogAddons,
   manifests,
   recent,
+  onRemoveRecent,
   onOpen,
 }: {
   catalogAddons: AddonDef[];
   manifests: Record<string, Manifest>;
-  recent: MetaPreview[];
+  recent: RecentItem[];
+  onRemoveRecent: (key: string) => void;
   onOpen: (t: string, id: string) => void;
 }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -360,7 +411,7 @@ function Home({
       {recent.length > 0 && (
         <section>
           <h2>Continue watching</h2>
-          <Grid metas={recent} onOpen={onOpen} />
+          <ContinueRow items={recent} onOpen={onOpen} onRemove={onRemoveRecent} />
         </section>
       )}
 
