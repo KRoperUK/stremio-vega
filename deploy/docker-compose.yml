@@ -50,6 +50,11 @@ services:
       - streaming-server
     environment:
       SERVER_TOKEN: ${SERVER_TOKEN:?SERVER_TOKEN is required}
+      # Restrict envsubst (run by the nginx:alpine entrypoint over the template)
+      # to ONLY ${SERVER_TOKEN}; otherwise it would also expand nginx's own
+      # $host / $uri / $http_origin / $request_method and blank them, breaking
+      # the config.
+      NGINX_ENVSUBST_FILTER: SERVER_TOKEN
     # Published to loopback for a local/tailnet check. Public exposure is via a
     # reverse proxy / tunnel on the host that reaches this container by name on
     # the shared external network below and terminates TLS — the loopback port
