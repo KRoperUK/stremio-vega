@@ -11,7 +11,12 @@ export interface Manifest {
   name: string;
   resources: (string | {name: string; types?: string[]})[];
   types: string[];
-  catalogs: {type: string; id: string; name?: string; extra?: {name: string; isRequired?: boolean}[]}[];
+  catalogs: {
+    type: string;
+    id: string;
+    name?: string;
+    extra?: {name: string; isRequired?: boolean; options?: string[]}[];
+  }[];
 }
 
 export interface MetaPreview {
@@ -35,6 +40,12 @@ export interface Stream {
   title?: string;
   name?: string;
   description?: string;
+}
+
+export interface Subtitle {
+  id: string;
+  url: string;
+  lang: string;
 }
 
 function addonBase(manifestUrl: string): string {
@@ -73,6 +84,11 @@ export function getMeta(manifestUrl: string, type: string, id: string): Promise<
 export function getStreams(manifestUrl: string, type: string, id: string): Promise<{streams: Stream[]}> {
   const base = addonBase(manifestUrl);
   return proxyGet(`${base}/stream/${type}/${encodeURIComponent(id)}.json`);
+}
+
+export function getSubtitles(manifestUrl: string, type: string, id: string): Promise<{subtitles: Subtitle[]}> {
+  const base = addonBase(manifestUrl);
+  return proxyGet(`${base}/subtitles/${type}/${encodeURIComponent(id)}.json`);
 }
 
 /** Does a manifest declare a given resource (catalog/meta/stream)? */

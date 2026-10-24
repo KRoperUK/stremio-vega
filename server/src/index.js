@@ -74,6 +74,37 @@ app.get('/api/addon', async (req, res) => {
   }
 });
 
+// Subtitle proxy + SRT->WebVTT conversion. A <track> element needs WebVTT, but
+// Stremio subtitle addons almost always serve SRT (and from a cross-origin
+// host). /api/subtitle?url=<srt-or-vtt url> fetches it, converts SRT to VTT if
+// needed, and serves it as text/vtt from this origin.
+app.get('/api/subtitle', async (req, res) => {
+  const u = req.query.url;
+  if (!u || !/^https?:\/\//.test(u)) {
+    res.status(400).json({error: 'url query param (http/https) required'});
+    return;
+  }
+  try {
+    const r = await fetch(u);
+    if (!r.ok) {
+      res.status(502).json({error: `subtitle fetch ${r.status}`});
+      return;
+    }
+    let text = await r.text();
+    text = text.replace(/^\uFEFF/, ''); // strip BOM
+    const isVtt = /^\s*WEBVTT/.test(text);
+    if (!isVtt) {
+      // SRT -> VTT: comma decimal separator becomes a dot; prepend the header.
+      const body = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+      text = 'WEBVTT\n\n' + body;
+    }
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.send(text);
+  } catch (e) {
+    res.status(502).json({error: 'subtitle fetch failed: ' + e.message});
+  }
+});
+
 // Static app (SPA fallback to index.html). index.html carries a __VEGA_TOKEN__
 // placeholder that we rewrite with the real token at serve time, so the built
 // app ships no secret and the token is only ever sent to a client that reached

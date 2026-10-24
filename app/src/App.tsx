@@ -1,19 +1,21 @@
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 import {useAddons} from './useAddons';
 import {
   getCatalog,
   getManifest,
   getMeta,
   getStreams,
+  getSubtitles,
   hasResource,
   type Manifest,
   type MetaDetail,
   type MetaPreview,
   type Stream,
+  type Subtitle,
 } from './addon';
 import {Player} from './Player';
 import {useSpatialNav, focusFirst} from './useSpatialNav';
-import {useRecent, recentToPreview} from './useRecent';
+import {useRecent, recentToPreview, recentKey} from './useRecent';
 import type {AddonDef} from './config';
 
 type View =
@@ -66,8 +68,13 @@ export function App() {
   // View history stack — the bottom is always Home, so Back pops one level and
   // only exits the app when already at the root.
   const [stack, setStack] = useState<View[]>([{name: 'home'}]);
-  const [playing, setPlaying] = useState<Stream | null>(null);
-  const {recent, record} = useRecent();
+  const [playing, setPlaying] = useState<{
+    stream: Stream;
+    subtitles: Subtitle[];
+    resumeKey: string;
+    startAt: number;
+  } | null>(null);
+  const {recent, record, setPosition, positionFor} = useRecent();
 
   const view = stack[stack.length - 1];
 
@@ -127,13 +134,23 @@ export function App() {
 
   const catalogAddons = enabled.filter((a) => manifests[a.manifestUrl] && hasResource(manifests[a.manifestUrl], 'catalog'));
 
-  // Start a stream and record it in "Continue watching".
+  // Start a stream and record it in "Continue watching". Carries subtitles and
+  // resumes from the saved position for this exact item.
   const playStream = useCallback(
     (
       s: Stream,
-      ctx: {meta: {id: string; type: string; name: string; poster?: string} | null; videoId?: string; label?: string},
+      ctx: {
+        meta: {id: string; type: string; name: string; poster?: string} | null;
+        videoId?: string;
+        label?: string;
+        subtitles?: Subtitle[];
+      },
     ) => {
+      let resumeKey = '';
+      let startAt = 0;
       if (ctx.meta) {
+        resumeKey = recentKey(ctx.meta.type, ctx.meta.id, ctx.videoId);
+        startAt = positionFor(resumeKey);
         record({
           type: ctx.meta.type,
           id: ctx.meta.id,
@@ -143,9 +160,9 @@ export function App() {
           label: ctx.label,
         });
       }
-      setPlaying(s);
+      setPlaying({stream: s, subtitles: ctx.subtitles ?? [], resumeKey, startAt});
     },
-    [record],
+    [record, positionFor],
   );
 
   return (
@@ -184,7 +201,17 @@ export function App() {
         )}
       </main>
 
-      {playing && <Player stream={playing} onClose={() => setPlaying(null)} />}
+      {playing && (
+        <Player
+          stream={playing.stream}
+          subtitles={playing.subtitles}
+          startAt={playing.startAt}
+          onProgress={(pos, dur) => {
+            if (playing.resumeKey) setPosition(playing.resumeKey, pos, dur);
+          }}
+          onClose={() => setPlaying(null)}
+        />
+      )}
     </div>
   );
 }
@@ -202,6 +229,21 @@ function Grid({metas, onOpen}: {metas: MetaPreview[]; onOpen: (t: string, id: st
   );
 }
 
+interface Row {
+  key: string;
+  manifestUrl: string;
+  catType: string;
+  catId: string;
+  title: string;
+  metas: MetaPreview[];
+  skip: number; // items already loaded (for the next page)
+  hasMore: boolean;
+  supportsGenre: boolean;
+  loadingMore: boolean;
+}
+
+const PAGE = 20;
+
 function Home({
   catalogAddons,
   manifests,
@@ -213,26 +255,58 @@ function Home({
   recent: MetaPreview[];
   onOpen: (t: string, id: string) => void;
 }) {
-  const [rows, setRows] = useState<{title: string; metas: MetaPreview[]}[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [attempt, setAttempt] = useState(0);
+  const [genre, setGenre] = useState<string>(''); // '' = all
+
+  // Union of genre options across catalogs that support a (non-required) genre
+  // filter — used to render the genre chip bar.
+  const genres = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of catalogAddons) {
+      for (const cat of manifests[a.manifestUrl]?.catalogs || []) {
+        const g = (cat.extra || []).find((e) => e.name === 'genre' && !e.isRequired);
+        for (const opt of g?.options || []) set.add(opt);
+      }
+    }
+    return Array.from(set).slice(0, 24);
+  }, [catalogAddons, manifests]);
 
   useEffect(() => {
     let cancelled = false;
     setStatus('loading');
     (async () => {
-      const out: {title: string; metas: MetaPreview[]}[] = [];
+      const out: Row[] = [];
       let sawCatalog = false;
       let anyError = false;
       for (const a of catalogAddons) {
         const m = manifests[a.manifestUrl];
-        for (const cat of (m.catalogs || []).slice(0, 4)) {
-          // skip search-only catalogs here
+        for (const cat of (m?.catalogs || []).slice(0, 4)) {
           if ((cat.extra || []).some((e) => e.name === 'search' && e.isRequired)) continue;
+          // A genre filter only applies to catalogs that advertise genre.
+          const supportsGenre = (cat.extra || []).some((e) => e.name === 'genre');
+          if (genre && !supportsGenre) continue;
           sawCatalog = true;
+          const extra: Record<string, string> = {};
+          if (genre && supportsGenre) extra.genre = genre;
           try {
-            const {metas} = await getCatalog(a.manifestUrl, cat.type, cat.id);
-            if (metas?.length) out.push({title: `${cat.name || cat.id} (${cat.type})`, metas: metas.slice(0, 20)});
+            const {metas} = await getCatalog(a.manifestUrl, cat.type, cat.id, extra);
+            if (metas?.length) {
+              const page = metas.slice(0, PAGE);
+              out.push({
+                key: `${a.manifestUrl}|${cat.type}|${cat.id}`,
+                manifestUrl: a.manifestUrl,
+                catType: cat.type,
+                catId: cat.id,
+                title: `${cat.name || cat.id} (${cat.type})`,
+                metas: page,
+                skip: page.length,
+                hasMore: metas.length >= PAGE,
+                supportsGenre,
+                loadingMore: false,
+              });
+            }
           } catch {
             anyError = true;
           }
@@ -245,7 +319,41 @@ function Home({
     return () => {
       cancelled = true;
     };
-  }, [catalogAddons.map((a) => a.manifestUrl).join(','), manifests, attempt]);
+  }, [catalogAddons.map((a) => a.manifestUrl).join(','), manifests, attempt, genre]);
+
+  // Load the next page for one row (skip = items already shown).
+  const loadMore = useCallback(
+    async (key: string) => {
+      const row = rows.find((r) => r.key === key);
+      if (!row || row.loadingMore || !row.hasMore) return;
+      setRows((rs) => rs.map((r) => (r.key === key ? {...r, loadingMore: true} : r)));
+      const extra: Record<string, string> = {skip: String(row.skip)};
+      if (genre && row.supportsGenre) extra.genre = genre;
+      try {
+        const {metas} = await getCatalog(row.manifestUrl, row.catType, row.catId, extra);
+        const next = metas || [];
+        // Dedupe against what the row already holds.
+        const seen = new Set(row.metas.map((m) => m.type + m.id));
+        const added = next.filter((m) => !seen.has(m.type + m.id));
+        setRows((rs) =>
+          rs.map((r) =>
+            r.key === key
+              ? {
+                  ...r,
+                  metas: [...r.metas, ...added],
+                  skip: r.skip + next.length,
+                  hasMore: next.length >= PAGE,
+                  loadingMore: false,
+                }
+              : r,
+          ),
+        );
+      } catch {
+        setRows((rs) => rs.map((r) => (r.key === key ? {...r, loadingMore: false, hasMore: false} : r)));
+      }
+    },
+    [rows, genre],
+  );
 
   return (
     <div className="rows">
@@ -256,18 +364,42 @@ function Home({
         </section>
       )}
 
+      {genres.length > 0 && (
+        <div className="genre-bar" role="group" aria-label="Filter by genre">
+          <button className={genre === '' ? 'genre active' : 'genre'} onClick={() => setGenre('')}>
+            All
+          </button>
+          {genres.map((g) => (
+            <button
+              key={g}
+              className={genre === g ? 'genre active' : 'genre'}
+              onClick={() => setGenre(g === genre ? '' : g)}
+            >
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
+
       {status === 'loading' && rows.length === 0 && <Spinner label="Loading catalogs…" />}
       {status === 'error' && (
         <ErrorBox label="Couldn't load catalogs." onRetry={() => setAttempt((n) => n + 1)} />
       )}
       {status === 'ready' && rows.length === 0 && recent.length === 0 && (
-        <p className="hint">Nothing to show yet — enable an addon with catalogs in the Addons tab.</p>
+        <p className="hint">
+          {genre ? `No ${genre} titles from enabled catalogs.` : 'Nothing to show yet — enable an addon with catalogs in the Addons tab.'}
+        </p>
       )}
 
-      {rows.map((r, i) => (
-        <section key={i}>
+      {rows.map((r) => (
+        <section key={r.key}>
           <h2>{r.title}</h2>
           <Grid metas={r.metas} onOpen={onOpen} />
+          {r.hasMore && (
+            <button className="load-more" disabled={r.loadingMore} onClick={() => void loadMore(r.key)}>
+              {r.loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          )}
         </section>
       ))}
     </div>
@@ -338,7 +470,10 @@ function Detail({
   id: string;
   addons: AddonDef[];
   manifests: Record<string, Manifest>;
-  onPlay: (s: Stream, ctx: {meta: MetaDetail | null; videoId?: string; label?: string}) => void;
+  onPlay: (
+    s: Stream,
+    ctx: {meta: MetaDetail | null; videoId?: string; label?: string; subtitles?: Subtitle[]},
+  ) => void;
   onBack: () => void;
 }) {
   const [meta, setMeta] = useState<MetaDetail | null>(null);
@@ -347,6 +482,7 @@ function Detail({
   const [selected, setSelected] = useState<{videoId: string; label: string} | null>(null);
   const [streams, setStreams] = useState<Stream[] | null>(null);
   const [streamStatus, setStreamStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   // Bumped by the Retry buttons to re-run the effects.
   const [attempt, setAttempt] = useState(0);
 
@@ -398,6 +534,7 @@ function Detail({
     let cancelled = false;
     setStreamStatus('loading');
     setStreams(null);
+    setSubtitles([]);
     (async () => {
       const all: Stream[] = [];
       let sawAddon = false;
@@ -417,6 +554,28 @@ function Detail({
       if (cancelled) return;
       setStreams(all);
       setStreamStatus(all.length === 0 && anyError && sawAddon ? 'error' : 'ready');
+
+      // Subtitles are best-effort and must never block or error the stream UI.
+      const subs: Subtitle[] = [];
+      const seenLang = new Set<string>();
+      for (const a of addons) {
+        const m = manifests[a.manifestUrl];
+        if (m && hasResource(m, 'subtitles', type)) {
+          try {
+            const {subtitles} = await getSubtitles(a.manifestUrl, type, streamId);
+            for (const s of subtitles || []) {
+              // One entry per language keeps the picker short.
+              if (s.url && !seenLang.has(s.lang)) {
+                seenLang.add(s.lang);
+                subs.push(s);
+              }
+            }
+          } catch {
+            /* skip addon */
+          }
+        }
+      }
+      if (!cancelled) setSubtitles(subs);
     })();
     return () => {
       cancelled = true;
@@ -489,7 +648,7 @@ function Detail({
                 <li key={i}>
                   <button
                     onClick={() =>
-                      onPlay(s, {meta, videoId: selected?.videoId, label: selected?.label})
+                      onPlay(s, {meta, videoId: selected?.videoId, label: selected?.label, subtitles})
                     }
                   >
                     ▶ {s.name || s.title || s.description || `Stream ${i + 1}`}
