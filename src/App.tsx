@@ -84,8 +84,9 @@ const INIT_SCRIPT = `
     var core = window.core;
     if (!core || typeof core.dispatch !== 'function') return;
 
-    // Best-effort read of the live settings from the core model, so we spread
-    // rather than clobber. Falls back to empty if the shape is not as expected.
+    // Best-effort read of the live settings so we spread rather than clobber.
+    // This build keeps the profile in the WASM core; getState may not expose it,
+    // in which case we send just the keys we are forcing.
     var settings = {};
     try {
       if (typeof core.getState === 'function') {
@@ -107,7 +108,7 @@ const INIT_SCRIPT = `
     }
 
     try {
-      // Register the server first so no confirm dialog is shown.
+      // Register the server first so no confirm dialog is shown, then select it.
       core.dispatch({action: 'Ctx', args: {action: 'AddServerUrl', args: FORCED_SERVER_URL}});
       var next = Object.assign({}, settings, {
         gamepadSupport: true,
