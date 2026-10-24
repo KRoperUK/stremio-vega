@@ -32,12 +32,18 @@ export const NATIVE_CONTAINERS = new Set([
 
 const FFPROBE = process.env.FFPROBE_BIN || 'ffprobe';
 
+// How long ffprobe may run before we give up. Kept short so a slow origin
+// fails fast (and the stream path falls back to direct passthrough) rather
+// than stalling past the edge proxy's idle timeout. Override with
+// PROBE_TIMEOUT_MS.
+const PROBE_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS) || 8000;
+
 /**
  * Probe a media URL with ffprobe. Returns { container, video, audio, raw } or
  * throws. Only reads the header (analyzeduration/probesize bounded) so it does
  * not download the whole file.
  */
-export function probe(url, {timeoutMs = 15000} = {}) {
+export function probe(url, {timeoutMs = PROBE_TIMEOUT_MS} = {}) {
   return new Promise((resolve, reject) => {
     const args = [
       '-v',
