@@ -119,6 +119,25 @@ input:focus {
   margin: 24px 0 12px;
   font-size: 22px;
 }
+.genre-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+.genre {
+  padding: 6px 14px;
+  font-size: 15px;
+  border-radius: 999px;
+  background: var(--surface);
+}
+.genre.active {
+  background: var(--accent);
+  color: #fff;
+}
+.load-more {
+  margin-top: 12px;
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
