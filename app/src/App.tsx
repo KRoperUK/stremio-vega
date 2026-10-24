@@ -46,11 +46,68 @@ function useManifests(addons: AddonDef[]) {
   return manifests;
 }
 
+// Tell the Vega WebView wrapper to exit the app (it listens for this message
+// and calls BackHandler.exitApp()). No-op in a plain browser.
+function requestAppExit() {
+  try {
+    (window as unknown as {ReactNativeWebView?: {postMessage: (m: string) => void}}).ReactNativeWebView?.postMessage(
+      'EXIT_APP',
+    );
+  } catch {
+    /* not in the WebView */
+  }
+}
+
 export function App() {
   const {addons, toggle, add, remove, enabled} = useAddons();
   const manifests = useManifests(enabled);
-  const [view, setView] = useState<View>({name: 'home'});
+  // View history stack — the bottom is always Home, so Back pops one level and
+  // only exits the app when already at the root.
+  const [stack, setStack] = useState<View[]>([{name: 'home'}]);
   const [playing, setPlaying] = useState<Stream | null>(null);
+
+  const view = stack[stack.length - 1];
+
+  const go = useCallback((next: View) => {
+    setStack((s) => {
+      // Opening a detail page pushes onto the stack (so Back returns to where
+      // you were). Top-nav targets (home/search/addons) replace the stack with
+      // [home] (+ the target), so Back from a top-level view exits rather than
+      // cycling through the other tabs.
+      if (next.name === 'detail') return [...s, next];
+      const top = s[s.length - 1];
+      if (top.name === next.name) return s;
+      return next.name === 'home' ? [{name: 'home'}] : [{name: 'home'}, next];
+    });
+  }, []);
+
+  // Single back action, used by the on-screen buttons and the remote Back key.
+  const back = useCallback(() => {
+    if (playing) {
+      setPlaying(null);
+      return;
+    }
+    setStack((s) => {
+      if (s.length > 1) return s.slice(0, -1);
+      requestAppExit(); // already at root
+      return s;
+    });
+  }, [playing]);
+
+  // Remote Back / keyboard Escape pops the stack. Capture phase so it runs
+  // before the page's default handling. back() closes the player first when
+  // one is open, so a single press never both closes the player and pops a
+  // view (the Player has no key listener of its own).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'GoBack' || e.key === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        back();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [back]);
 
   const catalogAddons = enabled.filter((a) => manifests[a.manifestUrl] && hasResource(manifests[a.manifestUrl], 'catalog'));
 
@@ -58,16 +115,16 @@ export function App() {
     <div className="app">
       <nav className="topbar">
         <span className="brand">Vega Stream</span>
-        <button onClick={() => setView({name: 'home'})}>Home</button>
-        <button onClick={() => setView({name: 'search'})}>Search</button>
-        <button onClick={() => setView({name: 'addons'})}>Addons</button>
+        <button onClick={() => go({name: 'home'})}>Home</button>
+        <button onClick={() => go({name: 'search'})}>Search</button>
+        <button onClick={() => go({name: 'addons'})}>Addons</button>
       </nav>
 
       {view.name === 'home' && (
-        <Home catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => setView({name: 'detail', type: t, id})} />
+        <Home catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
       )}
       {view.name === 'search' && (
-        <Search catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => setView({name: 'detail', type: t, id})} />
+        <Search catalogAddons={catalogAddons} manifests={manifests} onOpen={(t, id) => go({name: 'detail', type: t, id})} />
       )}
       {view.name === 'detail' && (
         <Detail
@@ -76,7 +133,7 @@ export function App() {
           addons={enabled}
           manifests={manifests}
           onPlay={setPlaying}
-          onBack={() => setView({name: 'home'})}
+          onBack={back}
         />
       )}
       {view.name === 'addons' && (
