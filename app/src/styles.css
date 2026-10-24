@@ -177,6 +177,29 @@ input:focus {
   object-fit: cover;
   background: var(--surface-2);
 }
+.poster-wrap {
+  position: relative;
+  display: block;
+}
+.badge {
+  position: absolute;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(11, 14, 23, 0.82);
+  color: var(--text);
+}
+.badge.rating {
+  top: 6px;
+  left: 6px;
+  color: #ffd34d;
+}
+.badge.year {
+  top: 6px;
+  right: 6px;
+  color: var(--muted);
+}
 .card-title {
   padding: 8px 10px;
   font-size: 15px;

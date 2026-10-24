@@ -24,6 +24,9 @@ export interface MetaPreview {
   type: string;
   name: string;
   poster?: string;
+  imdbRating?: string;
+  releaseInfo?: string;
+  year?: string | number;
 }
 
 export interface MetaDetail extends MetaPreview {

@@ -223,7 +223,14 @@ export function App() {
           subtitles={playing.subtitles}
           startAt={playing.startAt}
           onProgress={(pos, dur) => {
-            if (playing.resumeKey) setPosition(playing.resumeKey, pos, dur);
+            if (!playing.resumeKey) return;
+            // Near the end (~95%): the item is effectively watched — drop it
+            // from Continue watching rather than leaving it stuck at the end.
+            if (dur > 0 && pos / dur >= 0.95) {
+              removeRecent(playing.resumeKey);
+            } else {
+              setPosition(playing.resumeKey, pos, dur);
+            }
           }}
           onClose={() => setPlaying(null)}
         />
@@ -235,12 +242,20 @@ export function App() {
 function Grid({metas, onOpen}: {metas: MetaPreview[]; onOpen: (t: string, id: string) => void}) {
   return (
     <div className="grid">
-      {metas.map((m) => (
-        <button key={m.type + m.id} className="card" onClick={() => onOpen(m.type, m.id)}>
-          {m.poster ? <img src={m.poster} alt={m.name} loading="lazy" /> : <div className="noposter" />}
-          <span className="card-title">{m.name}</span>
-        </button>
-      ))}
+      {metas.map((m) => {
+        const year = m.year || m.releaseInfo;
+        const rating = m.imdbRating && m.imdbRating.trim();
+        return (
+          <button key={m.type + m.id} className="card" onClick={() => onOpen(m.type, m.id)}>
+            <span className="poster-wrap">
+              {m.poster ? <img src={m.poster} alt={m.name} loading="lazy" /> : <div className="noposter" />}
+              {rating && <span className="badge rating">★ {rating}</span>}
+              {year && <span className="badge year">{year}</span>}
+            </span>
+            <span className="card-title">{m.name}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
