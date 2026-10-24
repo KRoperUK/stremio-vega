@@ -135,6 +135,16 @@ export async function probeHandler(req, res) {
     const info = await probe(sourceUrl);
     res.json(decide(info));
   } catch (e) {
-    res.status(502).json({error: e.message});
+    // Probe failed (slow origin, timeout, unprobeable container). Mirror the
+    // stream path: report that we would fall back to direct passthrough rather
+    // than failing, so a slow origin does not surface as an error.
+    res.json({
+      passthrough: true,
+      reason: `probe-failed-fallback: ${e.message}`,
+      video: null,
+      audio: null,
+      container: '',
+      remuxOnly: false,
+    });
   }
 }

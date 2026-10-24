@@ -21,6 +21,8 @@ services:
       X264_PRESET: ${X264_PRESET:-veryfast}
       X264_CRF: ${X264_CRF:-23}
       MAX_BITRATE: ${MAX_BITRATE:-8M}
+      # ffprobe budget before falling back to direct passthrough (ms).
+      PROBE_TIMEOUT_MS: ${PROBE_TIMEOUT_MS:-8000}
     ports:
       - "127.0.0.1:${WEB_PORT:-8080}:8080"
     networks:
