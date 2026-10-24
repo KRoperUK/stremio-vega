@@ -48,7 +48,12 @@ export const DEFAULT_ADDONS: AddonDef[] = [
   {
     id: 'archive-public-domain',
     name: 'Archive.org Public Domain',
-    manifestUrl: 'https://stremio-archive.vercel.app/manifest.json',
+    // Stream-only addon (resources: ['stream']): serves direct archive.org MP4
+    // links for public-domain films keyed by the IMDb id that Cinemeta
+    // provides. Verified live Oct 2026 (Night of the Living Dead, Metropolis,
+    // Dracula all resolve to H.264/AAC MP4 — Vega-native, so they pass through
+    // the server without transcoding).
+    manifestUrl: 'https://dev.nebulawp.org/stremio/archive.org-addon/manifest.json',
     builtin: true,
     enabled: true,
   },
