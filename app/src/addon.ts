@@ -11,7 +11,12 @@ export interface Manifest {
   name: string;
   resources: (string | {name: string; types?: string[]})[];
   types: string[];
-  catalogs: {type: string; id: string; name?: string; extra?: {name: string; isRequired?: boolean}[]}[];
+  catalogs: {
+    type: string;
+    id: string;
+    name?: string;
+    extra?: {name: string; isRequired?: boolean; options?: string[]}[];
+  }[];
 }
 
 export interface MetaPreview {
