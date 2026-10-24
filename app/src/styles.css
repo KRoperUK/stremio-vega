@@ -138,6 +138,24 @@ input:focus {
 .load-more {
   margin-top: 12px;
 }
+.row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.see-all {
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: 15px;
+}
+.browse {
+  padding: 24px 32px;
+}
+.browse .back {
+  margin-bottom: 8px;
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
