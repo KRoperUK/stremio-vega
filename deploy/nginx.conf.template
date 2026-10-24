@@ -44,10 +44,12 @@ server {
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
 
-        add_header Access-Control-Allow-Origin "$http_origin" always;
-        add_header Access-Control-Allow-Methods "GET, HEAD, POST, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "*" always;
-        add_header Access-Control-Expose-Headers "*" always;
+        # NO CORS add_header here: the Stremio server (NO_CORS=1) already sends
+        # Access-Control-Allow-Origin: * on its responses. Adding our own as
+        # well produces TWO Access-Control-Allow-Origin headers, which browsers
+        # reject as invalid — so the web client would report the server as
+        # unreachable despite a 200. Preflight (OPTIONS) is handled above and
+        # never reaches the upstream, so it keeps its own CORS headers.
     }
 
     # Anything else under /s/ (wrong or missing token) is refused.
