@@ -64,12 +64,16 @@ const INIT_SCRIPT = `
 
   // (2) Force player settings once the core transport is available:
   //   - gamepadSupport: on, so the remote drives the on-screen controls.
-  //   - streamingServerUrl: point at the Stremio streaming server running on
-  //     the host (reachable from the Vega Virtual Device at 10.0.2.2, the
-  //     QEMU host gateway). Without a streaming server, most addon/torrent
-  //     streams are handed to the player un-remuxed and stall on Vega's W3C
-  //     media pipeline (poster -> black, time advances, no frames).
-  var FORCED_SERVER_URL = 'http://10.0.2.2:11470/';
+  //   - streamingServerUrl: point at the CORS-adding reverse proxy in front of
+  //     the Stremio streaming server (reachable from the Vega Virtual Device
+  //     at 10.0.2.2:8081, the QEMU host gateway). The server itself emits no
+  //     Access-Control-Allow-Origin, so a direct cross-origin request from the
+  //     web client (served on :8080) is blocked by the browser and the app
+  //     reports the server as unreachable; the proxy adds CORS. Without a
+  //     reachable streaming server, most addon/torrent streams are handed to
+  //     the player un-remuxed and stall on Vega's W3C media pipeline (poster ->
+  //     black, time advances, no frames).
+  var FORCED_SERVER_URL = 'http://10.0.2.2:8081/';
   var tries = 0;
   var timer = setInterval(function () {
     tries += 1;
