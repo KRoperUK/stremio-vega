@@ -14,3 +14,4 @@ node_modules
 CMakeUserPresets.json
 npm-debug.log
 buildinfo.json
+src/config.ts

@@ -14,6 +14,7 @@ import {
   WebViewMethods,
   WebViewNavigationEvent,
 } from '@amazon-devices/webview/dist/types/WebViewTypes';
+import {config} from './config';
 
 // Translate the Vega remote's Back/GoBack key into a synthetic Escape keydown
 // inside the page. stremio-web was written for desktop browsers and closes
@@ -64,16 +65,13 @@ const INIT_SCRIPT = `
 
   // (2) Force player settings once the core transport is available:
   //   - gamepadSupport: on, so the remote drives the on-screen controls.
-  //   - streamingServerUrl: point at the CORS-adding reverse proxy in front of
-  //     the Stremio streaming server (reachable from the Vega Virtual Device
-  //     at 10.0.2.2:8081, the QEMU host gateway). The server itself emits no
-  //     Access-Control-Allow-Origin, so a direct cross-origin request from the
-  //     web client (served on :8080) is blocked by the browser and the app
-  //     reports the server as unreachable; the proxy adds CORS. Without a
+  //   - streamingServerUrl: the self-hosted backend. stremio-web is served from
+  //     the same origin over HTTPS and the streaming server sits behind a
+  //     secret token path on that origin (see src/config.ts). Without a
   //     reachable streaming server, most addon/torrent streams are handed to
   //     the player un-remuxed and stall on Vega's W3C media pipeline (poster ->
   //     black, time advances, no frames).
-  var FORCED_SERVER_URL = 'http://10.0.2.2:8081/';
+  var FORCED_SERVER_URL = '${config.streamingServerUrl}';
   var tries = 0;
   var timer = setInterval(function () {
     tries += 1;
@@ -178,12 +176,10 @@ export const App = () => {
         // userAgent={''}
         source={{
           // headers: {},
-          // Self-hosted stremio-web served over HTTP from the host (the
-          // QEMU host gateway, 10.0.2.2:8080). Loading over HTTP — rather than
-          // https://web.stremio.com — means the page shares a scheme with the
-          // HTTP streaming server, so the browser does not block it as mixed
-          // content. It also removes the remote-load latency on startup.
-          uri: 'http://10.0.2.2:8080',
+          // Self-hosted stremio-web served over HTTPS from the backend
+          // (src/config.ts). Same HTTPS origin as the streaming server, so no
+          // mixed-content block, and no dependency on any host-local address.
+          uri: config.baseUrl,
         }}
         onLoad={onLoad}
         onLoadStart={onLoadStart}

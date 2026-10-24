@@ -2,6 +2,13 @@ import * as React from 'react';
 import {render} from '@testing-library/react-native';
 import {App} from '../src/App';
 
+jest.mock('../src/config', () => ({
+  config: {
+    baseUrl: 'https://example.test',
+    streamingServerUrl: 'https://example.test/s/test-token/',
+  },
+}));
+
 jest.mock('@amazon-devices/webview', () => ({
   WebView: 'WebView',
 }));
