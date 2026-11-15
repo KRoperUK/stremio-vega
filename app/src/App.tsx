@@ -586,10 +586,16 @@ function Browse({
   const [loadingMore, setLoadingMore] = useState(false);
   const [genre, setGenre] = useState('');
   const [attempt, setAttempt] = useState(0);
+  // Draft query vs. committed search: typing does not refetch; submitting
+  // replaces the grid, clearing restores the genre/paginated listing.
+  const [query, setQuery] = useState('');
+  const [submitted, setSubmitted] = useState('');
+  const searching = submitted !== '';
 
   const cat = (manifests[manifestUrl]?.catalogs || []).find((c) => c.type === catType && c.id === catId);
   const supportsGenre = (cat?.extra || []).some((e) => e.name === 'genre');
   const genres = ((cat?.extra || []).find((e) => e.name === 'genre')?.options || []).slice(0, 30);
+  const supportsSearch = (cat?.extra || []).some((e) => e.name === 'search');
 
   useEffect(() => {
     let cancelled = false;
@@ -597,7 +603,9 @@ function Browse({
     setMetas([]);
     (async () => {
       const extra: Record<string, string> = {};
-      if (genre && supportsGenre) extra.genre = genre;
+      // An active search overrides the default (genre-filtered) listing.
+      if (searching) extra.search = submitted;
+      else if (genre && supportsGenre) extra.genre = genre;
       try {
         const {metas} = await getCatalog(manifestUrl, catType, catId, extra);
         if (cancelled) return;
@@ -613,13 +621,14 @@ function Browse({
     return () => {
       cancelled = true;
     };
-  }, [manifestUrl, catType, catId, genre, supportsGenre, attempt]);
+  }, [manifestUrl, catType, catId, genre, supportsGenre, submitted, searching, attempt]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     const extra: Record<string, string> = {skip: String(skip)};
-    if (genre && supportsGenre) extra.genre = genre;
+    if (searching) extra.search = submitted;
+    else if (genre && supportsGenre) extra.genre = genre;
     try {
       const {metas: next} = await getCatalog(manifestUrl, catType, catId, extra);
       const list = next || [];
@@ -634,7 +643,7 @@ function Browse({
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, skip, genre, supportsGenre, manifestUrl, catType, catId]);
+  }, [loadingMore, hasMore, skip, genre, supportsGenre, searching, submitted, manifestUrl, catType, catId]);
 
   return (
     <div className="browse">
@@ -643,7 +652,37 @@ function Browse({
       </button>
       <h2>{title}</h2>
 
-      {genres.length > 0 && (
+      {supportsSearch && (
+        <form
+          className="browse-search"
+          role="search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setSubmitted(query.trim());
+          }}
+        >
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${title}…`}
+            aria-label={`Search within ${title}`}
+          />
+          <button type="submit">Go</button>
+          {searching && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery('');
+                setSubmitted('');
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </form>
+      )}
+
+      {!searching && genres.length > 0 && (
         <div className="genre-bar" role="group" aria-label="Filter by genre">
           <button className={genre === '' ? 'genre active' : 'genre'} onClick={() => setGenre('')}>
             All
@@ -662,7 +701,9 @@ function Browse({
 
       {status === 'loading' && <Spinner label="Loading…" />}
       {status === 'error' && <ErrorBox label="Couldn't load this catalog." onRetry={() => setAttempt((n) => n + 1)} />}
-      {status === 'ready' && metas.length === 0 && <p className="hint">Nothing here.</p>}
+      {status === 'ready' && metas.length === 0 && (
+        <p className="hint">{searching ? `No results for “${submitted}”.` : 'Nothing here.'}</p>
+      )}
 
       <Grid metas={metas} onOpen={onOpen} />
       {hasMore && (

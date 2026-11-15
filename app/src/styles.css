@@ -262,7 +262,8 @@ input:focus {
   padding: 24px 32px;
 }
 .search form,
-.addons form {
+.addons form,
+.browse-search {
   display: flex;
   gap: 12px;
   margin-bottom: 20px;
