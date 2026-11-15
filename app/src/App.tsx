@@ -360,9 +360,9 @@ function Home({
     let cancelled = false;
     setStatus('loading');
     (async () => {
-      const out: Row[] = [];
-      let sawCatalog = false;
-      let anyError = false;
+      // Ask every catalog at once (one round trip, not N sequential ones);
+      // a failing addon settles rejected and never blocks the others.
+      const tasks: {a: AddonDef; cat: NonNullable<Manifest['catalogs']>[number]; supportsGenre: boolean}[] = [];
       for (const a of catalogAddons) {
         const m = manifests[a.manifestUrl];
         for (const cat of (m?.catalogs || []).slice(0, 4)) {
@@ -370,32 +370,42 @@ function Home({
           // A genre filter only applies to catalogs that advertise genre.
           const supportsGenre = (cat.extra || []).some((e) => e.name === 'genre');
           if (genre && !supportsGenre) continue;
-          sawCatalog = true;
-          const extra: Record<string, string> = {};
-          if (genre && supportsGenre) extra.genre = genre;
-          try {
-            const {metas} = await getCatalog(a.manifestUrl, cat.type, cat.id, extra);
-            if (metas?.length) {
-              const page = metas.slice(0, PAGE);
-              out.push({
-                key: `${a.manifestUrl}|${cat.type}|${cat.id}`,
-                manifestUrl: a.manifestUrl,
-                catType: cat.type,
-                catId: cat.id,
-                title: `${cat.name || cat.id} (${cat.type})`,
-                metas: page,
-                skip: page.length,
-                hasMore: metas.length >= PAGE,
-                supportsGenre,
-                loadingMore: false,
-              });
-            }
-          } catch {
-            anyError = true;
-          }
+          tasks.push({a, cat, supportsGenre});
         }
       }
+      const sawCatalog = tasks.length > 0;
+      const settled = await Promise.allSettled(
+        tasks.map(async ({a, cat, supportsGenre}) => {
+          const extra: Record<string, string> = {};
+          if (genre && supportsGenre) extra.genre = genre;
+          const {metas} = await getCatalog(a.manifestUrl, cat.type, cat.id, extra);
+          const list = metas || [];
+          const page = list.slice(0, PAGE);
+          const row: Row = {
+            key: `${a.manifestUrl}|${cat.type}|${cat.id}`,
+            manifestUrl: a.manifestUrl,
+            catType: cat.type,
+            catId: cat.id,
+            title: `${cat.name || cat.id} (${cat.type})`,
+            metas: page,
+            skip: page.length,
+            hasMore: list.length >= PAGE,
+            supportsGenre,
+            loadingMore: false,
+          };
+          return row;
+        }),
+      );
       if (cancelled) return;
+      const out: Row[] = [];
+      let anyError = false;
+      for (const s of settled) {
+        if (s.status === 'fulfilled') {
+          if (s.value.metas.length) out.push(s.value);
+        } else {
+          anyError = true;
+        }
+      }
       setRows(out);
       setStatus(out.length === 0 && anyError && sawCatalog ? 'error' : 'ready');
     })();
@@ -507,23 +517,27 @@ function Search({
   const [metas, setMetas] = useState<MetaPreview[]>([]);
   const run = useCallback(async () => {
     if (!q.trim()) return;
-    const seen = new Set<string>();
-    const results: MetaPreview[] = [];
+    const tasks: {a: AddonDef; cat: NonNullable<Manifest['catalogs']>[number]}[] = [];
     for (const a of catalogAddons) {
       const m = manifests[a.manifestUrl];
-      for (const cat of m.catalogs || []) {
+      for (const cat of m?.catalogs || []) {
         if (!(cat.extra || []).some((e) => e.name === 'search')) continue;
-        try {
-          const {metas: r} = await getCatalog(a.manifestUrl, cat.type, cat.id, {search: q});
-          for (const it of r || []) {
-            const k = it.type + it.id;
-            if (!seen.has(k)) {
-              seen.add(k);
-              results.push(it);
-            }
-          }
-        } catch {
-          /* skip */
+        tasks.push({a, cat});
+      }
+    }
+    // One concurrent round across every searchable catalog; failures skip.
+    const settled = await Promise.allSettled(
+      tasks.map(({a, cat}) => getCatalog(a.manifestUrl, cat.type, cat.id, {search: q})),
+    );
+    const seen = new Set<string>();
+    const results: MetaPreview[] = [];
+    for (const s of settled) {
+      if (s.status !== 'fulfilled') continue;
+      for (const it of s.value.metas || []) {
+        const k = it.type + it.id;
+        if (!seen.has(k)) {
+          seen.add(k);
+          results.push(it);
         }
       }
     }
@@ -690,33 +704,29 @@ function Detail({
 
   const isSeries = type === 'series';
 
-  // Fetch meta.
+  // Fetch meta: ask every capable addon concurrently, first success (in
+  // addon order) wins. One failing addon never blocks the others.
   useEffect(() => {
     let cancelled = false;
     setMetaStatus('loading');
     setMeta(null);
     setSelected(null);
     (async () => {
-      let found: MetaDetail | null = null;
-      let sawAddon = false;
-      for (const a of addons) {
+      const capable = addons.filter((a) => {
         const m = manifests[a.manifestUrl];
-        if (m && hasResource(m, 'meta', type)) {
-          sawAddon = true;
-          try {
-            const {meta} = await getMeta(a.manifestUrl, type, id);
-            if (meta) {
-              found = meta;
-              break;
-            }
-          } catch {
-            /* try next */
-          }
+        return m && hasResource(m, 'meta', type);
+      });
+      const settled = await Promise.allSettled(capable.map((a) => getMeta(a.manifestUrl, type, id)));
+      let found: MetaDetail | null = null;
+      for (const s of settled) {
+        if (s.status === 'fulfilled' && s.value.meta) {
+          found = s.value.meta;
+          break;
         }
       }
       if (cancelled) return;
       setMeta(found);
-      setMetaStatus(found || !sawAddon ? 'ready' : 'error');
+      setMetaStatus(found || capable.length === 0 ? 'ready' : 'error');
     })();
     return () => {
       cancelled = true;
@@ -738,42 +748,43 @@ function Detail({
     setStreams(null);
     setSubtitles([]);
     (async () => {
-      const all: Stream[] = [];
-      let sawAddon = false;
-      let anyError = false;
-      for (const a of addons) {
+      // Streams and subtitles fan out concurrently across capable addons;
+      // results merge in addon order and failures never block the rest.
+      const streamCapable = addons.filter((a) => {
         const m = manifests[a.manifestUrl];
-        if (m && hasResource(m, 'stream', type)) {
-          sawAddon = true;
-          try {
-            const {streams} = await getStreams(a.manifestUrl, type, streamId);
-            for (const s of streams || []) all.push(s);
-          } catch {
-            anyError = true;
-          }
+        return m && hasResource(m, 'stream', type);
+      });
+      const subCapable = addons.filter((a) => {
+        const m = manifests[a.manifestUrl];
+        return m && hasResource(m, 'subtitles', type);
+      });
+      const [streamSettled, subSettled] = await Promise.all([
+        Promise.allSettled(streamCapable.map((a) => getStreams(a.manifestUrl, type, streamId))),
+        Promise.allSettled(subCapable.map((a) => getSubtitles(a.manifestUrl, type, streamId))),
+      ]);
+      if (cancelled) return;
+      const all: Stream[] = [];
+      let anyError = false;
+      for (const s of streamSettled) {
+        if (s.status === 'fulfilled') {
+          for (const st of s.value.streams || []) all.push(st);
+        } else {
+          anyError = true;
         }
       }
-      if (cancelled) return;
       setStreams(all);
-      setStreamStatus(all.length === 0 && anyError && sawAddon ? 'error' : 'ready');
+      setStreamStatus(all.length === 0 && anyError && streamCapable.length > 0 ? 'error' : 'ready');
 
       // Subtitles are best-effort and must never block or error the stream UI.
       const subs: Subtitle[] = [];
       const seenLang = new Set<string>();
-      for (const a of addons) {
-        const m = manifests[a.manifestUrl];
-        if (m && hasResource(m, 'subtitles', type)) {
-          try {
-            const {subtitles} = await getSubtitles(a.manifestUrl, type, streamId);
-            for (const s of subtitles || []) {
-              // One entry per language keeps the picker short.
-              if (s.url && !seenLang.has(s.lang)) {
-                seenLang.add(s.lang);
-                subs.push(s);
-              }
-            }
-          } catch {
-            /* skip addon */
+      for (const s of subSettled) {
+        if (s.status !== 'fulfilled') continue;
+        for (const sub of s.value.subtitles || []) {
+          // One entry per language keeps the picker short.
+          if (sub.url && !seenLang.has(sub.lang)) {
+            seenLang.add(sub.lang);
+            subs.push(sub);
           }
         }
       }
