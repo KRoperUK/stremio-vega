@@ -13,6 +13,9 @@ import express from 'express';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {streamHandler, probeHandler} from './stream.js';
+import {fetchJsonCapped, injectToken, openUpstreamStream, readCappedText} from './guard.js';
+
+const SUBTITLE_MAX_BYTES = 2 * 1024 * 1024;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, '..', 'public');
@@ -56,21 +59,24 @@ app.get('/api/stream', streamHandler);
 
 // Addon proxy: /api/addon?u=<full addon endpoint url>. Lets the WebView call
 // http addons without CORS/mixed-content trouble, and keeps addon traffic on
-// the same HTTPS origin.
+// the same HTTPS origin. Internal/redirect targets are refused (SSRF guard),
+// bodies are size-capped, and we always serve a JSON content type — never the
+// upstream's — so a malicious addon cannot hand the WebView an executable.
 app.get('/api/addon', async (req, res) => {
   const u = req.query.u;
   if (!u || !/^https?:\/\//.test(u)) {
     res.status(400).json({error: 'u query param (http/https) required'});
     return;
   }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   try {
-    const r = await fetch(u, {headers: {Accept: 'application/json'}});
-    const body = await r.text();
-    res.status(r.status);
-    res.setHeader('Content-Type', r.headers.get('content-type') || 'application/json');
-    res.send(body);
+    const {status, text} = await fetchJsonCapped(u, {headers: {Accept: 'application/json'}});
+    res.status(status);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.send(text);
   } catch (e) {
-    res.status(502).json({error: 'addon fetch failed: ' + e.message});
+    const blocked = /blocked|redirect|resolve|credentials|http\(s\)/.test(e.message);
+    res.status(blocked ? 400 : 502).json({error: 'addon fetch failed: ' + e.message});
   }
 });
 
@@ -84,13 +90,15 @@ app.get('/api/subtitle', async (req, res) => {
     res.status(400).json({error: 'url query param (http/https) required'});
     return;
   }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   try {
-    const r = await fetch(u);
+    const r = await openUpstreamStream(u);
     if (!r.ok) {
+      await r.body?.cancel().catch(() => {});
       res.status(502).json({error: `subtitle fetch ${r.status}`});
       return;
     }
-    let text = await r.text();
+    let text = await readCappedText(r.body, SUBTITLE_MAX_BYTES);
     text = text.replace(/^\uFEFF/, ''); // strip BOM
     const isVtt = /^\s*WEBVTT/.test(text);
     if (!isVtt) {
@@ -101,7 +109,12 @@ app.get('/api/subtitle', async (req, res) => {
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.send(text);
   } catch (e) {
-    res.status(502).json({error: 'subtitle fetch failed: ' + e.message});
+    if (!res.headersSent) {
+      const blocked = /blocked|redirect|resolve|credentials|http\(s\)|exceeds/.test(e.message);
+      res.status(blocked ? 400 : 502).json({error: 'subtitle fetch failed: ' + e.message});
+    } else {
+      res.destroy();
+    }
   }
 });
 
@@ -113,10 +126,9 @@ import {readFileSync} from 'node:fs';
 
 let indexHtml = '';
 try {
-  indexHtml = readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8').replace(
-    /__VEGA_TOKEN__/g,
-    TOKEN,
-  );
+  // See injectToken: JSON literal + function replacement so tokens with
+  // quotes and dollar signs boot the app and authorize API calls.
+  indexHtml = injectToken(readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8'), TOKEN);
 } catch {
   indexHtml = '';
 }
