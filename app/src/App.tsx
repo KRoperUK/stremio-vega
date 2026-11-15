@@ -742,8 +742,26 @@ function Detail({
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   // Bumped by the Retry buttons to re-run the effects.
   const [attempt, setAttempt] = useState(0);
+  // Trailer overlay (YouTube embed) — open only when a trailer is available.
+  const [trailer, setTrailer] = useState(false);
 
   const isSeries = type === 'series';
+
+  // While the trailer overlay is open, Back closes it instead of popping the
+  // view. This listens on window/capture so it runs before App's own Back
+  // handler on document (registered first, when App mounted).
+  useEffect(() => {
+    if (!trailer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'GoBack' || e.key === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        setTrailer(false);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [trailer]);
 
   // Fetch meta: ask every capable addon concurrently, first success (in
   // addon order) wins. One failing addon never blocks the others.
@@ -752,6 +770,7 @@ function Detail({
     setMetaStatus('loading');
     setMeta(null);
     setSelected(null);
+    setTrailer(false);
     (async () => {
       const capable = addons.filter((a) => {
         const m = manifests[a.manifestUrl];
@@ -843,6 +862,8 @@ function Detail({
   const epLabel = (v: {season?: number; episode?: number; title?: string}) =>
     v.season != null && v.episode != null ? `S${v.season}E${v.episode}` : v.title || 'Episode';
 
+  const trailerId = meta?.trailerStreams?.find((t) => t.ytId)?.ytId;
+
   return (
     <div className="detail">
       <button className="back" onClick={onBack}>
@@ -855,10 +876,19 @@ function Detail({
       )}
 
       {meta && (
-        <div className="detail-head" style={meta.background ? {backgroundImage: `url(${meta.background})`} : undefined}>
-          <h1>{meta.name}</h1>
-          {meta.runtime && <span>{meta.runtime}</span>}
-          {meta.description && <p>{meta.description}</p>}
+        <DetailHero meta={meta} onTrailer={trailerId ? () => setTrailer(true) : undefined} />
+      )}
+      {trailer && trailerId && (
+        <div className="trailer-overlay" role="dialog" aria-label={`${meta?.name || 'Video'} trailer`}>
+          <iframe
+            src={`https://www.youtube-nocookie.com/embed/${trailerId}?autoplay=1&rel=0`}
+            title={`${meta?.name || 'Video'} trailer`}
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+          />
+          <button autoFocus onClick={() => setTrailer(false)}>
+            ← Back
+          </button>
         </div>
       )}
 
@@ -912,6 +942,38 @@ function Detail({
           </ul>
         </>
       )}
+    </div>
+  );
+}
+
+// Hero header: full-width backdrop with a gradient scrim, the logo (or the
+// title), a meta line (year · runtime · rating · genres), a compact
+// credits line, and a Trailer action only when a trailer is available.
+// Missing fields render nothing — no empty chrome.
+function DetailHero({meta, onTrailer}: {meta: MetaDetail; onTrailer?: () => void}) {
+  const year = meta.year || meta.releaseInfo;
+  const rating = meta.imdbRating && meta.imdbRating.trim();
+  const line = [year, meta.runtime, rating ? `★ ${rating}` : '', ...(meta.genres || []).slice(0, 3)]
+    .filter(Boolean)
+    .join(' · ');
+  const cast = (meta.cast || []).slice(0, 5);
+  const directors = Array.isArray(meta.director) ? meta.director : meta.director ? [meta.director] : [];
+  return (
+    <div className="detail-head" style={meta.background ? {backgroundImage: `url(${meta.background})`} : undefined}>
+      {meta.logo ? <img className="hero-logo" src={meta.logo} alt="" /> : <h1>{meta.name}</h1>}
+      {line && <div className="hero-meta">{line}</div>}
+      {(cast.length > 0 || directors.length > 0) && (
+        <div className="hero-credits">
+          {cast.length > 0 && <span>Starring {cast.join(', ')}</span>}
+          {directors.length > 0 && <span>Directed by {directors.join(', ')}</span>}
+        </div>
+      )}
+      {onTrailer && (
+        <button className="trailer" onClick={onTrailer}>
+          ▶ Trailer
+        </button>
+      )}
+      {meta.description && <p>{meta.description}</p>}
     </div>
   );
 }
