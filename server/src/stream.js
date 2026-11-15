@@ -16,6 +16,11 @@
 
 import {spawn} from 'node:child_process';
 import {probe, decide} from './codec.js';
+import {assertSafeUrl, openUpstreamStream} from './guard.js';
+
+// A stalled upstream must fail fast, not hang the <video> forever. While
+// piping, the watchdog fires if no byte arrives within IDLE_TIMEOUT_MS.
+const IDLE_TIMEOUT_MS = Number(process.env.UPSTREAM_IDLE_TIMEOUT_MS) || 20000;
 
 const FFMPEG = process.env.FFMPEG_BIN || 'ffmpeg';
 
@@ -79,7 +84,15 @@ function buildArgs(sourceUrl, plan) {
 async function proxyPassthrough(sourceUrl, req, res) {
   const headers = {};
   if (req.headers.range) headers.Range = req.headers.range;
-  const upstream = await fetch(sourceUrl, {headers});
+  const upstream = await openUpstreamStream(sourceUrl, {headers});
+  // The stream route serves media only: refuse anything that is not an
+  // audio/video payload so the endpoint cannot be used to launder files.
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!/^(audio|video)\//.test(contentType)) {
+    await upstream.body?.cancel().catch(() => {});
+    if (!res.headersSent) res.status(502).json({error: `refusing non-media content-type: ${contentType || 'none'}`});
+    return;
+  }
   // Mirror status (200 or 206 for range) and the headers a <video> needs.
   res.status(upstream.status);
   for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
@@ -87,25 +100,43 @@ async function proxyPassthrough(sourceUrl, req, res) {
     if (v) res.setHeader(h, v);
   }
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (!upstream.body) {
     res.end();
     return;
   }
-  // Pipe the web stream to the Node response, aborting if the client leaves.
+  // Pipe the web stream to the Node response, aborting if the client leaves
+  // and failing fast if the upstream stalls mid-body.
   const reader = upstream.body.getReader();
-  req.on('close', () => reader.cancel().catch(() => {}));
+  let stalled = false;
+  const watchdog = () => {
+    stalled = true;
+    reader.cancel().catch(() => {});
+  };
+  let timer = setTimeout(watchdog, IDLE_TIMEOUT_MS);
+  req.on('close', () => {
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+  });
   try {
     for (;;) {
       const {done, value} = await reader.read();
       if (done) break;
+      clearTimeout(timer);
+      timer = setTimeout(watchdog, IDLE_TIMEOUT_MS);
       if (!res.write(Buffer.from(value))) {
         await new Promise((r) => res.once('drain', r));
       }
     }
   } catch {
-    /* client went away or upstream aborted */
+    /* client went away, upstream stalled, or upstream aborted */
   } finally {
-    res.end();
+    clearTimeout(timer);
+    if (stalled && !res.headersSent) {
+      res.status(504).json({error: 'upstream stalled'});
+    } else {
+      res.end();
+    }
   }
 }
 
@@ -117,6 +148,12 @@ export async function streamHandler(req, res) {
   const sourceUrl = req.query.url;
   if (!sourceUrl || !/^https?:\/\//.test(sourceUrl)) {
     res.status(400).json({error: 'url query param (http/https) required'});
+    return;
+  }
+  try {
+    await assertSafeUrl(sourceUrl);
+  } catch (e) {
+    res.status(400).json({error: 'refusing unsafe url: ' + e.message});
     return;
   }
 
@@ -185,6 +222,12 @@ export async function probeHandler(req, res) {
   const sourceUrl = req.query.url;
   if (!sourceUrl || !/^https?:\/\//.test(sourceUrl)) {
     res.status(400).json({error: 'url query param (http/https) required'});
+    return;
+  }
+  try {
+    await assertSafeUrl(sourceUrl);
+  } catch (e) {
+    res.status(400).json({error: 'refusing unsafe url: ' + e.message});
     return;
   }
   try {
