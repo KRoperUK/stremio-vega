@@ -31,7 +31,12 @@ export function Player({
 
   // Only direct http(s) streams go through the transcoder. Torrent (infoHash)
   // and ytId streams are out of scope for this build.
-  const src = stream.url ? apiUrl('stream', {url: stream.url}) : null;
+  // `start` resumes remux/transcode output at the saved position: a piped
+  // fMP4 has no server-side seeking, so the offset is baked in at spawn time.
+  // (Passthrough output ignores it — the <video> seeks natively via Range.)
+  const src = stream.url
+    ? apiUrl('stream', {url: stream.url, ...(startAt > 0 ? {start: String(Math.floor(startAt))} : {})})
+    : null;
 
   useEffect(() => {
     const v = videoRef.current;

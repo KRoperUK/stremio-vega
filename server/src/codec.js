@@ -8,7 +8,8 @@
 //
 // We also only pass through containers a browser <video>/MSE can demux
 // directly: mp4/mov, webm/mkv (matroska), and HLS. Other containers (avi, ts,
-// flv, ogg) get remuxed/transcoded even when their codecs are fine.
+// flv, ogg) get remuxed/transcoded even when their codecs are fine — a raw
+// .ts in particular must be repacked into fragmented MP4, never sent as-is.
 
 import {spawn} from 'node:child_process';
 
@@ -22,13 +23,10 @@ export const NATIVE_AUDIO = new Set([
   'flac',
   'vorbis',
 ]);
-// Containers the WebView can demux without a remux.
-export const NATIVE_CONTAINERS = new Set([
-  'mov,mp4,m4a,3gp,3g2,mj2',
-  'matroska,webm',
-  'hls',
-  'mpegts', // many HLS/progressive TS streams play; borderline, see note
-]);
+// Containers the WebView can demux without a remux. Note mpegts is absent on
+// purpose: a .ts with standard codecs is repacked (ffmpeg -c copy into fMP4),
+// not passed through.
+export const NATIVE_CONTAINERS = new Set(['mov,mp4,m4a,3gp,3g2,mj2', 'matroska,webm', 'hls']);
 
 const FFPROBE = process.env.FFPROBE_BIN || 'ffprobe';
 

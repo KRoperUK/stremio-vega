@@ -79,8 +79,12 @@ const FMP4_OUT = [
   'mp4',
 ];
 
-function buildArgs(sourceUrl, plan) {
-  const input = ['-i', sourceUrl];
+/** Build the ffmpeg argv for a remux/transcode plan. `start` (seconds) seeks
+ * the input before decoding so a re-encoded film resumes where it stopped —
+ * a piped fMP4 has no server-side Range support, so the offset must be baked
+ * in at spawn time. Exported for tests. */
+export function buildArgs(sourceUrl, plan, start = 0) {
+  const input = [...(start > 0 ? ['-ss', String(start)] : []), '-i', sourceUrl];
   let codecArgs;
   if (plan.remuxOnly) {
     // Container only — copy both streams.
@@ -233,7 +237,12 @@ export async function streamHandler(req, res) {
     return;
   }
 
-  const args = buildArgs(sourceUrl, plan);
+  // Resume offset for remux/transcode output (seconds; invalid values resume
+  // from the start rather than failing playback). Passthrough needs none —
+  // the <video> seeks natively via proxied Range requests.
+  const parsed = Number(req.query.start);
+  const start = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  const args = buildArgs(sourceUrl, plan, start);
   const ff = spawn(FFMPEG, args, {stdio: ['ignore', 'pipe', 'pipe']});
 
   res.setHeader('Content-Type', 'video/mp4');
