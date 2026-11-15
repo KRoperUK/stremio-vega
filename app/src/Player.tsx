@@ -27,6 +27,9 @@ export function Player({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // Index into `subtitles` for the active track, or -1 for "Off".
   const [activeSub, setActiveSub] = useState(-1);
+  // A dead stream (network failure, ffmpeg exit) must surface instead of a
+  // black screen.
+  const [failed, setFailed] = useState(false);
   const lastReport = useRef(0);
 
   // Only direct http(s) streams go through the transcoder. Torrent (infoHash)
@@ -37,6 +40,11 @@ export function Player({
   const src = stream.url
     ? apiUrl('stream', {url: stream.url, ...(startAt > 0 ? {start: String(Math.floor(startAt))} : {})})
     : null;
+
+  // A new source clears a previous failure.
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -79,7 +87,20 @@ export function Player({
     return (
       <div className="player-overlay">
         <p>This stream type (torrent/YouTube) is not supported in this build.</p>
-        <button onClick={onClose}>Back</button>
+        <button autoFocus onClick={onClose}>
+          Back
+        </button>
+      </div>
+    );
+  }
+
+  if (failed) {
+    return (
+      <div className="player-overlay" role="alert">
+        <p>This stream failed to play. The source may be offline.</p>
+        <button autoFocus onClick={onClose}>
+          Back
+        </button>
       </div>
     );
   }
@@ -92,6 +113,7 @@ export function Player({
         controls
         autoPlay
         crossOrigin="anonymous"
+        onError={() => setFailed(true)}
         style={{width: '100%', height: '100%', background: '#000'}}
       >
         {subtitles.map((s, i) => (

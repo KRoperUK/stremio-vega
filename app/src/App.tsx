@@ -77,6 +77,25 @@ export function App() {
   } | null>(null);
   const {recent, record, setPosition, positionFor, remove: removeRecent} = useRecent();
 
+  // Stable progress callback, re-created only when the playing item changes.
+  // (An inline closure here would be a new function every render, re-binding
+  // the Player's effect on each progress write — a render loop during
+  // playback. Keying on the resume key keeps the effect bound once per stream.)
+  const playingKey = playing?.resumeKey ?? '';
+  const handleProgress = useCallback(
+    (pos: number, dur: number) => {
+      if (!playingKey) return;
+      // Near the end (~95%): the item is effectively watched — drop it
+      // from Continue watching rather than leaving it stuck at the end.
+      if (dur > 0 && pos / dur >= 0.95) {
+        removeRecent(playingKey);
+      } else {
+        setPosition(playingKey, pos, dur);
+      }
+    },
+    [playingKey, removeRecent, setPosition],
+  );
+
   const view = stack[stack.length - 1];
 
   // D-pad / remote focus navigation (arrow keys move focus, Enter activates).
@@ -222,16 +241,7 @@ export function App() {
           stream={playing.stream}
           subtitles={playing.subtitles}
           startAt={playing.startAt}
-          onProgress={(pos, dur) => {
-            if (!playing.resumeKey) return;
-            // Near the end (~95%): the item is effectively watched — drop it
-            // from Continue watching rather than leaving it stuck at the end.
-            if (dur > 0 && pos / dur >= 0.95) {
-              removeRecent(playing.resumeKey);
-            } else {
-              setPosition(playing.resumeKey, pos, dur);
-            }
-          }}
+          onProgress={handleProgress}
           onClose={() => setPlaying(null)}
         />
       )}
