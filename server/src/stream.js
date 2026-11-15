@@ -22,6 +22,41 @@ import {assertSafeUrl, openUpstreamStream} from './guard.js';
 // piping, the watchdog fires if no byte arrives within IDLE_TIMEOUT_MS.
 const IDLE_TIMEOUT_MS = Number(process.env.UPSTREAM_IDLE_TIMEOUT_MS) || 20000;
 
+// Bound concurrent re-encodes: the OCI A1 cannot sustain more than a couple
+// of software x264 jobs. Extras get a retryable 429, never a queue that
+// piles up until everything stutters.
+export const MAX_TRANSCODES = Number(process.env.MAX_TRANSCODES) || 2;
+export const TRANSCODE_RETRY_AFTER_S = 5;
+let activeTranscodes = 0;
+
+/** Try to take a transcode slot. Returns true when admitted. */
+export function tryAcquireTranscode() {
+  if (activeTranscodes >= MAX_TRANSCODES) return false;
+  activeTranscodes += 1;
+  return true;
+}
+
+/** Release a previously acquired transcode slot. */
+export function releaseTranscode() {
+  activeTranscodes = Math.max(0, activeTranscodes - 1);
+}
+
+// Recently probed videos replay without paying the probe delay again: the
+// codec decision is cached per URL for a few minutes (sources do not change
+// codec mid-stream; a stale entry only risks one extra passthrough/remux
+// choice on the next play, which the stream path already handles safely).
+export const PROBE_CACHE_TTL_MS = Number(process.env.PROBE_CACHE_TTL_MS) || 5 * 60 * 1000;
+export const probeCache = new Map();
+
+/** Probe with a TTL cache. `probeFn` is injectable for tests. */
+export async function cachedProbe(url, probeFn = probe) {
+  const hit = probeCache.get(url);
+  if (hit && Date.now() - hit.at < PROBE_CACHE_TTL_MS) return hit.info;
+  const info = await probeFn(url);
+  probeCache.set(url, {at: Date.now(), info});
+  return info;
+}
+
 const FFMPEG = process.env.FFMPEG_BIN || 'ffmpeg';
 
 // Encoder tuning for the OCI A1 (ARM, no GPU) — software x264, fast preset,
@@ -159,7 +194,7 @@ export async function streamHandler(req, res) {
 
   let plan;
   try {
-    const info = await probe(sourceUrl);
+    const info = await cachedProbe(sourceUrl);
     plan = decide(info);
   } catch (e) {
     // If we cannot probe, fall back to passthrough — better to let the Stick
@@ -189,11 +224,29 @@ export async function streamHandler(req, res) {
     return;
   }
 
+  // Re-encodes (but not cheap remux copies) consume a bounded slot. When all
+  // slots are busy the client gets a retryable refusal, not a pile-up.
+  const needsSlot = !plan.remuxOnly;
+  if (needsSlot && !tryAcquireTranscode()) {
+    res.setHeader('Retry-After', String(TRANSCODE_RETRY_AFTER_S));
+    res.status(429).json({error: 'transcode slots busy, retry shortly'});
+    return;
+  }
+
   const args = buildArgs(sourceUrl, plan);
   const ff = spawn(FFMPEG, args, {stdio: ['ignore', 'pipe', 'pipe']});
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  let released = false;
+  const releaseOnce = () => {
+    if (needsSlot && !released) {
+      released = true;
+      releaseTranscode();
+    }
+  };
 
   ff.stdout.pipe(res);
   let errTail = '';
@@ -201,10 +254,12 @@ export async function streamHandler(req, res) {
     errTail = (errTail + d.toString()).slice(-2000);
   });
   ff.on('error', (e) => {
+    releaseOnce();
     if (!res.headersSent) res.status(502).json({error: 'ffmpeg spawn failed: ' + e.message});
     else res.destroy();
   });
   ff.on('close', (code) => {
+    releaseOnce();
     if (code && code !== 0 && code !== 255) {
       // 255 = SIGKILL from client disconnect; not an error.
       console.error(`[stream] ffmpeg exit ${code}: ${errTail.slice(-400)}`);
@@ -213,6 +268,7 @@ export async function streamHandler(req, res) {
   });
   // Kill ffmpeg if the client goes away.
   req.on('close', () => {
+    releaseOnce();
     if (!ff.killed) ff.kill('SIGKILL');
   });
 }
@@ -231,7 +287,7 @@ export async function probeHandler(req, res) {
     return;
   }
   try {
-    const info = await probe(sourceUrl);
+    const info = await cachedProbe(sourceUrl);
     res.json(decide(info));
   } catch (e) {
     // Probe failed (slow origin, timeout, unprobeable container). Mirror the
