@@ -23,16 +23,20 @@ Debridio, Torrentio, … still work) with a player we control.
 ## Codec handling (the point)
 
 `GET /api/stream?url=<source>&t=<token>`:
-1. `ffprobe` the source (header only).
-2. If video+audio+container are **Vega-native** → **302 redirect** to the
-   source: the Fire Stick fetches and hardware-decodes it directly (zero VPS
-   CPU).
-3. Else → `ffmpeg`: `-c copy` the native track(s), re-encode only the
-   unsupported one(s) to H.264/AAC, into fragmented MP4 streamed over a chunked
-   response.
+1. `ffprobe` the source (header only; the decision is cached for a few minutes).
+2. If video+audio+container are **Vega-native** → **proxy** the bytes straight
+   through (range-aware, zero VPS CPU): the Fire Stick fetches and
+   hardware-decodes them, but every byte stays on this HTTPS origin. A 302
+   redirect to the source would fail on the Stick (often-HTTP origins, missing
+   CORS, media loaders that will not follow cross-origin redirects).
+3. Else, if only the container is off (e.g. `.ts`/AVI holding H.264+AAC) →
+   `ffmpeg -c copy` remux into fragmented MP4 (no re-encode).
+4. Else → re-encode only the unsupported track(s) to H.264/AAC, into
+   fragmented MP4 over a chunked response. Concurrent re-encodes are bounded
+   (extras get a retryable 429, never a pile-up).
 
 Vega-native: video H.264/HEVC/VP8/VP9/AV1, audio AAC/MP3/AC3/E-AC3/Opus/FLAC/
-Vorbis, container mp4/webm-mkv/hls.
+Vorbis, container mp4/webm-mkv/hls. Anything else is remuxed or transcoded.
 
 ## Security
 

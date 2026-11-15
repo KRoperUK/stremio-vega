@@ -1,6 +1,7 @@
 // Player: plays a selected stream through the server's /api/stream endpoint,
-// which probes the codec and either redirects (passthrough) or transcodes.
-// A plain <video> element — the WebView decodes H.264/HEVC/etc. natively.
+// which probes the codec and either proxies it through (passthrough), remuxes
+// it without re-encoding, or transcodes it. A plain <video> element — the
+// WebView decodes H.264/HEVC/etc. natively.
 //
 // Adds subtitle <track>s (proxied + converted to WebVTT by /api/subtitle) with
 // a language chooser, and resume support: it seeks to `startAt` on load and
