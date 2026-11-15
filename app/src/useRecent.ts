@@ -3,7 +3,6 @@
 // series), most-recent-first, capped so the list never grows unbounded.
 
 import {useCallback, useEffect, useState} from 'react';
-import type {MetaPreview} from './addon';
 
 const KEY = 'vega.recent.v1';
 const MAX = 20;
@@ -68,17 +67,10 @@ export function useRecent() {
     [recent],
   );
 
-  const clear = useCallback(() => setRecent([]), []);
-
   // Drop one item from the list by its stable key.
   const remove = useCallback((key: string) => {
     setRecent((prev) => prev.filter((r) => recentKey(r.type, r.id, r.videoId) !== key));
   }, []);
 
-  return {recent, record, setPosition, positionFor, clear, remove};
-}
-
-// Convenience: build the MetaPreview a Grid expects from a RecentItem.
-export function recentToPreview(r: RecentItem): MetaPreview {
-  return {type: r.type, id: r.id, name: r.name, poster: r.poster};
+  return {recent, record, setPosition, positionFor, remove};
 }

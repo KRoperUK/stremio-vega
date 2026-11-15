@@ -1,6 +1,7 @@
 // Player: plays a selected stream through the server's /api/stream endpoint,
-// which probes the codec and either redirects (passthrough) or transcodes.
-// A plain <video> element — the WebView decodes H.264/HEVC/etc. natively.
+// which probes the codec and either proxies it through (passthrough), remuxes
+// it without re-encoding, or transcodes it. A plain <video> element — the
+// WebView decodes H.264/HEVC/etc. natively.
 //
 // Adds subtitle <track>s (proxied + converted to WebVTT by /api/subtitle) with
 // a language chooser, and resume support: it seeks to `startAt` on load and
@@ -26,11 +27,24 @@ export function Player({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // Index into `subtitles` for the active track, or -1 for "Off".
   const [activeSub, setActiveSub] = useState(-1);
+  // A dead stream (network failure, ffmpeg exit) must surface instead of a
+  // black screen.
+  const [failed, setFailed] = useState(false);
   const lastReport = useRef(0);
 
   // Only direct http(s) streams go through the transcoder. Torrent (infoHash)
   // and ytId streams are out of scope for this build.
-  const src = stream.url ? apiUrl('stream', {url: stream.url}) : null;
+  // `start` resumes remux/transcode output at the saved position: a piped
+  // fMP4 has no server-side seeking, so the offset is baked in at spawn time.
+  // (Passthrough output ignores it — the <video> seeks natively via Range.)
+  const src = stream.url
+    ? apiUrl('stream', {url: stream.url, ...(startAt > 0 ? {start: String(Math.floor(startAt))} : {})})
+    : null;
+
+  // A new source clears a previous failure.
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -73,7 +87,20 @@ export function Player({
     return (
       <div className="player-overlay">
         <p>This stream type (torrent/YouTube) is not supported in this build.</p>
-        <button onClick={onClose}>Back</button>
+        <button autoFocus onClick={onClose}>
+          Back
+        </button>
+      </div>
+    );
+  }
+
+  if (failed) {
+    return (
+      <div className="player-overlay" role="alert">
+        <p>This stream failed to play. The source may be offline.</p>
+        <button autoFocus onClick={onClose}>
+          Back
+        </button>
       </div>
     );
   }
@@ -86,6 +113,7 @@ export function Player({
         controls
         autoPlay
         crossOrigin="anonymous"
+        onError={() => setFailed(true)}
         style={{width: '100%', height: '100%', background: '#000'}}
       >
         {subtitles.map((s, i) => (

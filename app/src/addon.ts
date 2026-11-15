@@ -31,8 +31,13 @@ export interface MetaPreview {
 
 export interface MetaDetail extends MetaPreview {
   background?: string;
+  logo?: string;
   description?: string;
   runtime?: string;
+  genres?: string[];
+  cast?: string[];
+  director?: string | string[];
+  trailerStreams?: {ytId: string; title?: string}[];
   videos?: {id: string; title?: string; season?: number; episode?: number}[];
 }
 

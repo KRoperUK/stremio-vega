@@ -77,6 +77,25 @@ export function App() {
   } | null>(null);
   const {recent, record, setPosition, positionFor, remove: removeRecent} = useRecent();
 
+  // Stable progress callback, re-created only when the playing item changes.
+  // (An inline closure here would be a new function every render, re-binding
+  // the Player's effect on each progress write — a render loop during
+  // playback. Keying on the resume key keeps the effect bound once per stream.)
+  const playingKey = playing?.resumeKey ?? '';
+  const handleProgress = useCallback(
+    (pos: number, dur: number) => {
+      if (!playingKey) return;
+      // Near the end (~95%): the item is effectively watched — drop it
+      // from Continue watching rather than leaving it stuck at the end.
+      if (dur > 0 && pos / dur >= 0.95) {
+        removeRecent(playingKey);
+      } else {
+        setPosition(playingKey, pos, dur);
+      }
+    },
+    [playingKey, removeRecent, setPosition],
+  );
+
   const view = stack[stack.length - 1];
 
   // D-pad / remote focus navigation (arrow keys move focus, Enter activates).
@@ -222,16 +241,7 @@ export function App() {
           stream={playing.stream}
           subtitles={playing.subtitles}
           startAt={playing.startAt}
-          onProgress={(pos, dur) => {
-            if (!playing.resumeKey) return;
-            // Near the end (~95%): the item is effectively watched — drop it
-            // from Continue watching rather than leaving it stuck at the end.
-            if (dur > 0 && pos / dur >= 0.95) {
-              removeRecent(playing.resumeKey);
-            } else {
-              setPosition(playing.resumeKey, pos, dur);
-            }
-          }}
+          onProgress={handleProgress}
           onClose={() => setPlaying(null)}
         />
       )}
@@ -586,10 +596,16 @@ function Browse({
   const [loadingMore, setLoadingMore] = useState(false);
   const [genre, setGenre] = useState('');
   const [attempt, setAttempt] = useState(0);
+  // Draft query vs. committed search: typing does not refetch; submitting
+  // replaces the grid, clearing restores the genre/paginated listing.
+  const [query, setQuery] = useState('');
+  const [submitted, setSubmitted] = useState('');
+  const searching = submitted !== '';
 
   const cat = (manifests[manifestUrl]?.catalogs || []).find((c) => c.type === catType && c.id === catId);
   const supportsGenre = (cat?.extra || []).some((e) => e.name === 'genre');
   const genres = ((cat?.extra || []).find((e) => e.name === 'genre')?.options || []).slice(0, 30);
+  const supportsSearch = (cat?.extra || []).some((e) => e.name === 'search');
 
   useEffect(() => {
     let cancelled = false;
@@ -597,7 +613,9 @@ function Browse({
     setMetas([]);
     (async () => {
       const extra: Record<string, string> = {};
-      if (genre && supportsGenre) extra.genre = genre;
+      // An active search overrides the default (genre-filtered) listing.
+      if (searching) extra.search = submitted;
+      else if (genre && supportsGenre) extra.genre = genre;
       try {
         const {metas} = await getCatalog(manifestUrl, catType, catId, extra);
         if (cancelled) return;
@@ -613,13 +631,14 @@ function Browse({
     return () => {
       cancelled = true;
     };
-  }, [manifestUrl, catType, catId, genre, supportsGenre, attempt]);
+  }, [manifestUrl, catType, catId, genre, supportsGenre, submitted, searching, attempt]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     const extra: Record<string, string> = {skip: String(skip)};
-    if (genre && supportsGenre) extra.genre = genre;
+    if (searching) extra.search = submitted;
+    else if (genre && supportsGenre) extra.genre = genre;
     try {
       const {metas: next} = await getCatalog(manifestUrl, catType, catId, extra);
       const list = next || [];
@@ -634,7 +653,7 @@ function Browse({
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, skip, genre, supportsGenre, manifestUrl, catType, catId]);
+  }, [loadingMore, hasMore, skip, genre, supportsGenre, searching, submitted, manifestUrl, catType, catId]);
 
   return (
     <div className="browse">
@@ -643,7 +662,37 @@ function Browse({
       </button>
       <h2>{title}</h2>
 
-      {genres.length > 0 && (
+      {supportsSearch && (
+        <form
+          className="browse-search"
+          role="search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setSubmitted(query.trim());
+          }}
+        >
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${title}…`}
+            aria-label={`Search within ${title}`}
+          />
+          <button type="submit">Go</button>
+          {searching && (
+            <button
+              type="button"
+              onClick={() => {
+                setQuery('');
+                setSubmitted('');
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </form>
+      )}
+
+      {!searching && genres.length > 0 && (
         <div className="genre-bar" role="group" aria-label="Filter by genre">
           <button className={genre === '' ? 'genre active' : 'genre'} onClick={() => setGenre('')}>
             All
@@ -662,7 +711,9 @@ function Browse({
 
       {status === 'loading' && <Spinner label="Loading…" />}
       {status === 'error' && <ErrorBox label="Couldn't load this catalog." onRetry={() => setAttempt((n) => n + 1)} />}
-      {status === 'ready' && metas.length === 0 && <p className="hint">Nothing here.</p>}
+      {status === 'ready' && metas.length === 0 && (
+        <p className="hint">{searching ? `No results for “${submitted}”.` : 'Nothing here.'}</p>
+      )}
 
       <Grid metas={metas} onOpen={onOpen} />
       {hasMore && (
@@ -701,8 +752,26 @@ function Detail({
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   // Bumped by the Retry buttons to re-run the effects.
   const [attempt, setAttempt] = useState(0);
+  // Trailer overlay (YouTube embed) — open only when a trailer is available.
+  const [trailer, setTrailer] = useState(false);
 
   const isSeries = type === 'series';
+
+  // While the trailer overlay is open, Back closes it instead of popping the
+  // view. This listens on window/capture so it runs before App's own Back
+  // handler on document (registered first, when App mounted).
+  useEffect(() => {
+    if (!trailer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'GoBack' || e.key === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        setTrailer(false);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [trailer]);
 
   // Fetch meta: ask every capable addon concurrently, first success (in
   // addon order) wins. One failing addon never blocks the others.
@@ -711,6 +780,7 @@ function Detail({
     setMetaStatus('loading');
     setMeta(null);
     setSelected(null);
+    setTrailer(false);
     (async () => {
       const capable = addons.filter((a) => {
         const m = manifests[a.manifestUrl];
@@ -802,6 +872,8 @@ function Detail({
   const epLabel = (v: {season?: number; episode?: number; title?: string}) =>
     v.season != null && v.episode != null ? `S${v.season}E${v.episode}` : v.title || 'Episode';
 
+  const trailerId = meta?.trailerStreams?.find((t) => t.ytId)?.ytId;
+
   return (
     <div className="detail">
       <button className="back" onClick={onBack}>
@@ -814,10 +886,19 @@ function Detail({
       )}
 
       {meta && (
-        <div className="detail-head" style={meta.background ? {backgroundImage: `url(${meta.background})`} : undefined}>
-          <h1>{meta.name}</h1>
-          {meta.runtime && <span>{meta.runtime}</span>}
-          {meta.description && <p>{meta.description}</p>}
+        <DetailHero meta={meta} onTrailer={trailerId ? () => setTrailer(true) : undefined} />
+      )}
+      {trailer && trailerId && (
+        <div className="trailer-overlay" role="dialog" aria-label={`${meta?.name || 'Video'} trailer`}>
+          <iframe
+            src={`https://www.youtube-nocookie.com/embed/${trailerId}?autoplay=1&rel=0`}
+            title={`${meta?.name || 'Video'} trailer`}
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+          />
+          <button autoFocus onClick={() => setTrailer(false)}>
+            ← Back
+          </button>
         </div>
       )}
 
@@ -871,6 +952,38 @@ function Detail({
           </ul>
         </>
       )}
+    </div>
+  );
+}
+
+// Hero header: full-width backdrop with a gradient scrim, the logo (or the
+// title), a meta line (year · runtime · rating · genres), a compact
+// credits line, and a Trailer action only when a trailer is available.
+// Missing fields render nothing — no empty chrome.
+function DetailHero({meta, onTrailer}: {meta: MetaDetail; onTrailer?: () => void}) {
+  const year = meta.year || meta.releaseInfo;
+  const rating = meta.imdbRating && meta.imdbRating.trim();
+  const line = [year, meta.runtime, rating ? `★ ${rating}` : '', ...(meta.genres || []).slice(0, 3)]
+    .filter(Boolean)
+    .join(' · ');
+  const cast = (meta.cast || []).slice(0, 5);
+  const directors = Array.isArray(meta.director) ? meta.director : meta.director ? [meta.director] : [];
+  return (
+    <div className="detail-head" style={meta.background ? {backgroundImage: `url(${meta.background})`} : undefined}>
+      {meta.logo ? <img className="hero-logo" src={meta.logo} alt="" /> : <h1>{meta.name}</h1>}
+      {line && <div className="hero-meta">{line}</div>}
+      {(cast.length > 0 || directors.length > 0) && (
+        <div className="hero-credits">
+          {cast.length > 0 && <span>Starring {cast.join(', ')}</span>}
+          {directors.length > 0 && <span>Directed by {directors.join(', ')}</span>}
+        </div>
+      )}
+      {onTrailer && (
+        <button className="trailer" onClick={onTrailer}>
+          ▶ Trailer
+        </button>
+      )}
+      {meta.description && <p>{meta.description}</p>}
     </div>
   );
 }

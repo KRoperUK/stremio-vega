@@ -84,15 +84,19 @@ export function useSpatialNav(): void {
     const onKey = (e: KeyboardEvent) => {
       const dir = KEY_TO_DIR[e.key];
       const active = document.activeElement as HTMLElement | null;
+      const tag = active ? active.tagName : '';
       const typingInText =
         active &&
-        active.tagName === 'INPUT' &&
+        tag === 'INPUT' &&
         (active as HTMLInputElement).type !== 'checkbox' &&
         (active as HTMLInputElement).type !== 'radio';
 
       if (dir) {
         // Let left/right move the text caret inside a text field.
         if (typingInText && (dir === 'left' || dir === 'right')) return;
+        // A focused dropdown owns up/down (they move between options, e.g.
+        // the subtitle picker); only left/right move focus away from it.
+        if (tag === 'SELECT' && (dir === 'up' || dir === 'down')) return;
         e.preventDefault();
         const current = active && active !== document.body ? active : candidates()[0];
         if (!current) return;
@@ -105,7 +109,6 @@ export function useSpatialNav(): void {
       if ((e.key === 'Enter' || e.key === 'Select') && active) {
         // Native buttons/inputs already act on Enter; only synthesise a click
         // for a focusable that is not one of those.
-        const tag = active.tagName;
         if (tag !== 'BUTTON' && tag !== 'INPUT' && tag !== 'A') {
           e.preventDefault();
           active.click();
