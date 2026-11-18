@@ -13,7 +13,7 @@ import express from 'express';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {streamHandler, probeHandler} from './stream.js';
-import {fetchJsonCapped, injectToken, openUpstreamStream, readCappedText} from './guard.js';
+import {fetchJsonCapped, injectToken, openUpstreamStream, readCappedText, securityHeaders, tokenGate} from './guard.js';
 
 const SUBTITLE_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -37,22 +37,18 @@ app.use((req, res, next) => {
   next();
 });
 
+// Baseline security headers on every response (see guard.js).
+app.use(securityHeaders);
+
 // Health is ungated (liveness probes should not need the secret).
 app.get('/api/health', (_req, res) => res.json({ok: true}));
 
-// Token gate for the rest of /api.
-app.use('/api', (req, res, next) => {
-  if (!TOKEN) {
-    next();
-    return;
-  }
-  const t = req.query.t || req.get('X-Token');
-  if (t !== TOKEN) {
-    res.status(403).json({error: 'forbidden'});
-    return;
-  }
-  next();
-});
+// Token gate for the rest of /api. Fail-closed when SERVER_TOKEN is unset:
+// an open transcoder/proxy on a public host would be an abuse relay.
+if (!TOKEN) {
+  console.warn('WARNING: SERVER_TOKEN is not set — /api will refuse all requests until it is.');
+}
+app.use('/api', tokenGate(() => TOKEN));
 
 app.get('/api/probe', probeHandler);
 app.get('/api/stream', streamHandler);

@@ -182,3 +182,45 @@ export async function fetchJsonCapped(rawUrl, opts = {}) {
   const text = await readCappedText(res.body, opts.maxBytes ?? MAX_JSON_BYTES);
   return {status: res.status, text};
 }
+
+/**
+ * Fail-closed token gate for /api (issue #21).
+ *
+ * The built app ships no secret: the server injects SERVER_TOKEN into the
+ * served index.html, so the token only ever reaches a client that reached
+ * this origin (which, in production, sits behind tunnel-level access
+ * control — see docs/LOCKDOWN.md). The gate reads the token through
+ * `getToken` so tests can rotate it without touching the environment.
+ *
+ * Fail-closed: when no server token is configured the whole /api refuses
+ * with 503 instead of serving open (an open transcoder/proxy on a public
+ * host is an abuse relay). The owner is not locked out: setting
+ * SERVER_TOKEN (already required by deploy/) restores access.
+ */
+export function tokenGate(getToken) {
+  return (req, res, next) => {
+    const token = getToken();
+    if (!token) {
+      res.status(503).json({error: 'server misconfigured: SERVER_TOKEN is not set'});
+      return;
+    }
+    const t = req.query.t || req.get('X-Token');
+    if (t !== token) {
+      res.status(403).json({error: 'forbidden'});
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Baseline security headers for every response the server sends.
+ * The app is a WebView-loaded SPA: it must never be framed elsewhere and
+ * responses must never be sniffed as executable content.
+ */
+export function securityHeaders(_req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+}
