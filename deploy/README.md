@@ -40,9 +40,13 @@ Vorbis, container mp4/webm-mkv/hls. Anything else is remuxed or transcoded.
 
 ## Security
 
-`/api` is gated by `SERVER_TOKEN` (query `t` or `X-Token`). The built app ships
+`/api` is gated by `SERVER_TOKEN` (query `t` or `X-Token`), and fails
+closed with `503` when the token is unset. The built app ships
 no secret; the server injects the token into `index.html` at serve time, so
 only a client that reached this origin (behind the tunnel) receives it.
+The token gate is the second layer: the first must be tunnel-level access
+control. See [docs/LOCKDOWN.md](../docs/LOCKDOWN.md) for the threat model,
+the owner runbook, and the human verification steps (issue #21).
 
 ## Run locally
 
